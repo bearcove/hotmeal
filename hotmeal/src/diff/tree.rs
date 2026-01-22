@@ -487,9 +487,31 @@ impl ShadowTree {
             let slot = self.detach_to_slot(occupant);
             Some(slot)
         } else {
-            // No occupant, just append
-            parent.append(new_node, &mut self.arena);
-            None
+            // Grow the children array with placeholder text nodes to reach the target position
+            while parent.children(&self.arena).count() < position {
+                let placeholder = self.arena.new_node(NodeData {
+                    hash: NodeHash(0),
+                    kind: HtmlNodeKind::Text,
+                    label: None,
+                    properties: HtmlProps {
+                        text: Some(String::new()),
+                        attrs: HashMap::new(),
+                    },
+                });
+                parent.append(placeholder, &mut self.arena);
+            }
+
+            // Now insert at position (either appending or displacing)
+            let current_children: Vec<_> = parent.children(&self.arena).collect();
+            if position < current_children.len() {
+                let occupant = current_children[position];
+                occupant.insert_before(new_node, &mut self.arena);
+                let slot = self.detach_to_slot(occupant);
+                Some(slot)
+            } else {
+                parent.append(new_node, &mut self.arena);
+                None
+            }
         }
     }
 
@@ -1083,8 +1105,14 @@ mod tests {
     #[test]
     fn test_fuzzer_em_li_navigate_text() {
         // Fuzzer found "Insert: cannot navigate through text node" error
-        let old_html = r#"<html><body><em> &lt;v&lt;      &lt;&lt; v</em></body></html>"#;
-        let new_html = r#"<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html><body><li>a&lt; &lt;v&lt;      &lt;&lt;</li><img src=""></body></html>"#;
+        // The fuzzer generates unescaped HTML which html5ever parses as actual elements
+        let old_html = r#"<html><body><em> <v<      << v</em></body></html>"#;
+        let new_html = r#"<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html><body><li>a< <v<      <<</li><img src=""></body></html>"#;
+
+        let old_tree = super::super::apply::parse_html(old_html).expect("parse old failed");
+        let new_tree = super::super::apply::parse_html(new_html).expect("parse new failed");
+        debug!("Old HTML parsed: {:#?}", old_tree);
+        debug!("New HTML parsed: {:#?}", new_tree);
 
         let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
         debug!("Patches: {:#?}", patches);
