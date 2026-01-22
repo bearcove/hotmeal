@@ -1100,4 +1100,25 @@ mod tests {
         debug!("Expected: {}", expected);
         assert_eq!(result, expected, "HTML output should match");
     }
+
+    #[test]
+    fn test_fuzzer_nested_ol_patch_order() {
+        // Fuzzer found "patch at index 4 is out of order" error
+        let old_html = r#"<!DOCTYPE html><html><body><ol start="0"></ol></body></html>"#;
+        let new_html = r#"<html><body><ol start="255"></ol><ol start="93"></ol><ol start="91"><ol start="1"><a href="vaaaaaaaaaaaaa"></a></ol></ol></body></html>"#;
+
+        let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
+        debug!("Patches: {:#?}", patches);
+
+        let mut tree = super::super::apply::parse_html(old_html).expect("parse old failed");
+        super::super::apply::apply_patches(&mut tree, &patches).expect("apply failed");
+
+        let result = tree.to_html();
+        let expected_tree = super::super::apply::parse_html(new_html).expect("parse new failed");
+        let expected = expected_tree.to_html();
+
+        debug!("Result: {}", result);
+        debug!("Expected: {}", expected);
+        assert_eq!(result, expected, "HTML output should match");
+    }
 }
