@@ -659,79 +659,91 @@ fn apply_patch(
 }
 
 /// Apply property updates, handling `_text` specially.
+/// The changes vec represents the ENTIRE final property state in order.
 fn apply_update_props(
     root: &mut Element,
     path: &NodePath,
     changes: &[PropChange],
 ) -> Result<(), String> {
+    debug!(
+        "apply_update_props: START path={:?} changes_len={}",
+        path.0,
+        changes.len()
+    );
+
     // Get the content at path
     let content = root
         .get_content_mut(&path.0)
         .map_err(|e| format!("UpdateProps: {e}"))?;
 
-    for change in changes {
-        if change.name == "_text" {
-            // Special handling for _text: update the text content directly
-            match content {
-                Content::Text(t) => {
-                    if let Some(text) = &change.value {
-                        *t = text.clone();
-                    } else {
-                        *t = String::new();
-                    }
+    debug!("apply_update_props: got content, checking type");
+
+    // Handle text node updates
+    if let Some(text_change) = changes.iter().find(|c| c.name == "_text") {
+        match content {
+            Content::Text(t) => {
+                if let Some(text) = &text_change.value {
+                    *t = text.clone();
                 }
-                Content::Element(elem) => {
-                    // Update text child of element
-                    if let Some(text) = &change.value {
-                        if elem.children.is_empty() {
-                            elem.children.push(Content::Text(text.clone()));
-                        } else {
-                            let mut found_text = false;
-                            for child in &mut elem.children {
-                                if let Content::Text(t) = child {
-                                    *t = text.clone();
-                                    found_text = true;
-                                    break;
-                                }
-                            }
-                            if !found_text {
-                                elem.children[0] = Content::Text(text.clone());
+                // None means keep existing, but Text nodes always get value in changes
+            }
+            Content::Comment(c) => {
+                if let Some(text) = &text_change.value {
+                    *c = text.clone();
+                }
+            }
+            Content::Element(elem) => {
+                // Update text child of element
+                if let Some(text) = &text_change.value {
+                    if elem.children.is_empty() {
+                        elem.children.push(Content::Text(text.clone()));
+                    } else {
+                        let mut found_text = false;
+                        for child in &mut elem.children {
+                            if let Content::Text(t) = child {
+                                *t = text.clone();
+                                found_text = true;
+                                break;
                             }
                         }
-                    } else {
-                        elem.children.retain(|c| !matches!(c, Content::Text(_)));
+                        if !found_text {
+                            elem.children[0] = Content::Text(text.clone());
+                        }
                     }
                 }
-                Content::Comment(_) => {
-                    return Err(
-                        "UpdateProps: cannot set _text property on comment node".to_string()
-                    );
-                }
-            }
-        } else {
-            // Regular attribute - only valid on elements
-            match content {
-                Content::Element(elem) => {
-                    if let Some(value) = &change.value {
-                        elem.attrs.insert(change.name.clone(), value.clone());
-                    } else {
-                        elem.attrs.shift_remove(&change.name);
-                    }
-                }
-                Content::Text(_) => {
-                    return Err(format!(
-                        "UpdateProps: cannot set attribute '{}' on text node",
-                        change.name
-                    ));
-                }
-                Content::Comment(_) => {
-                    return Err(format!(
-                        "UpdateProps: cannot set attribute '{}' on comment node",
-                        change.name
-                    ));
-                }
+                // None means keep existing text
             }
         }
+    }
+
+    // Handle element attributes
+    // The changes vec represents the ENTIRE final attribute state in order
+    if let Content::Element(elem) = content {
+        let old_attrs = std::mem::take(&mut elem.attrs);
+        debug!(
+            "apply_update_props: rebuilding attrs old_count={} changes_count={}",
+            old_attrs.len(),
+            changes.len()
+        );
+
+        for change in changes {
+            if change.name != "_text" {
+                debug!(
+                    "apply_update_props: processing attr {} value={:?}",
+                    change.name, change.value
+                );
+                let value = if let Some(new_value) = &change.value {
+                    // Different value - use the new one
+                    new_value.clone()
+                } else {
+                    // Same value - copy from old attrs
+                    old_attrs.get(&change.name).cloned().unwrap_or_default()
+                };
+                elem.attrs.insert(change.name.clone(), value);
+            }
+        }
+        debug!("apply_update_props: final attrs_count={}", elem.attrs.len());
+        // Attributes not in changes are implicitly removed
     }
 
     Ok(())

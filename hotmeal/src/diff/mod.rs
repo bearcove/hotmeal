@@ -74,12 +74,14 @@ pub enum InsertContent {
     Comment(String),
 }
 
-/// A single property change within an UpdateProps operation.
+/// A property in the final state within an UpdateProps operation.
+/// The vec position determines the final ordering.
 #[derive(Debug, Clone, PartialEq, Eq, facet::Facet)]
 pub struct PropChange {
     /// The property name (field name)
     pub name: String,
-    /// The new value (None if property is being removed)
+    /// The value: None means "keep existing value", Some means "update to this value".
+    /// Properties not in the list are implicitly removed.
     pub value: Option<String>,
 }
 

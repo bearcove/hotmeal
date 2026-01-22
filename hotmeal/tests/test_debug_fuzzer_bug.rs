@@ -1,5 +1,6 @@
 //! Debug the specific fuzzer bug
 
+use facet_testhelpers::test;
 use hotmeal::diff::{NodePath, NodeRef, Patch};
 
 #[test]

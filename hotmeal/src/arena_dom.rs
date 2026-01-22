@@ -257,21 +257,49 @@ impl Document {
                 let node_id = self.navigate_path(&path.0)?;
                 let node_data = self.arena[node_id].get_mut();
 
-                for change in changes {
-                    if change.name == "_text" {
-                        if let NodeKind::Text(t) = &mut node_data.kind
-                            && let Some(new_text) = &change.value
-                        {
+                // Handle text node updates
+                if let Some(text_change) = changes.iter().find(|c| c.name == "_text") {
+                    if let NodeKind::Text(t) = &mut node_data.kind {
+                        if let Some(new_text) = &text_change.value {
                             *t = StrTendril::from(new_text.as_str());
                         }
-                    } else if let NodeKind::Element(elem) = &mut node_data.kind {
-                        if let Some(new_value) = &change.value {
-                            elem.attrs
-                                .insert(change.name.clone(), StrTendril::from(new_value.as_str()));
-                        } else {
-                            elem.attrs.shift_remove(&change.name);
+                    } else if let NodeKind::Comment(c) = &mut node_data.kind
+                        && let Some(new_text) = &text_change.value
+                    {
+                        *c = StrTendril::from(new_text.as_str());
+                    }
+                }
+
+                // Handle element attribute updates
+                // The changes vec represents the ENTIRE final attribute state in order
+                if let NodeKind::Element(elem) = &mut node_data.kind {
+                    // Always rebuild attrs from changes, even if empty (to handle removals)
+                    let old_attrs = std::mem::take(&mut elem.attrs);
+                    debug!(
+                        "UpdateProps: rebuilding attrs old_count={} changes_count={}",
+                        old_attrs.len(),
+                        changes.len()
+                    );
+
+                    for change in changes {
+                        if change.name != "_text" {
+                            debug!(
+                                "UpdateProps: processing attr {} value={:?}",
+                                change.name, change.value
+                            );
+                            let value = if let Some(new_value) = &change.value {
+                                // Different value - use the new one
+                                StrTendril::from(new_value.as_str())
+                            } else {
+                                // Same value - copy from old attrs
+                                old_attrs.get(&change.name).cloned().unwrap_or_default()
+                            };
+                            elem.attrs.insert(change.name.clone(), value);
                         }
                     }
+                    debug!("UpdateProps: final attrs_count={}", elem.attrs.len());
+                    // Attributes not in changes are implicitly removed (we cleared attrs and only
+                    // added back what's in changes)
                 }
             }
         }

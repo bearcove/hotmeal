@@ -7,8 +7,8 @@ use crate::debug;
 #[allow(unused_imports)]
 use crate::trace;
 use cinereus::{
-    EditOp, Matching, MatchingConfig, NodeData, NodeHash, Properties, PropertyChange, Tree,
-    TreeTypes,
+    EditOp, Matching, MatchingConfig, NodeData, NodeHash, PropValue, Properties,
+    PropertyInFinalState, Tree, TreeTypes,
     indextree::{self, NodeId},
 };
 use indexmap::IndexMap;
@@ -78,43 +78,35 @@ impl Properties for HtmlProps {
         }
     }
 
-    fn diff(&self, other: &Self) -> Vec<PropertyChange<Self::Key, Self::Value>> {
-        let mut changes = Vec::new();
+    fn diff(&self, other: &Self) -> Vec<PropertyInFinalState<Self::Key, Self::Value>> {
+        let mut result = Vec::new();
 
-        // Diff text content
-        if self.text != other.text {
-            changes.push(PropertyChange {
+        // Diff text content - always include if present in final state
+        if let Some(text) = &other.text {
+            result.push(PropertyInFinalState {
                 key: "_text".to_string(),
-                old_value: self.text.clone(),
-                new_value: other.text.clone(),
+                value: if self.text.as_ref() == Some(text) {
+                    PropValue::Same
+                } else {
+                    PropValue::Different(text.clone())
+                },
             });
         }
 
-        // Diff attributes
-        // Added or changed
+        // Include all attributes from the final state in order
         for (key, new_val) in &other.attrs {
             let old_val = self.attrs.get(key);
-            if old_val != Some(new_val) {
-                changes.push(PropertyChange {
-                    key: key.clone(),
-                    old_value: old_val.cloned(),
-                    new_value: Some(new_val.clone()),
-                });
-            }
+            result.push(PropertyInFinalState {
+                key: key.clone(),
+                value: if old_val == Some(new_val) {
+                    PropValue::Same
+                } else {
+                    PropValue::Different(new_val.clone())
+                },
+            });
         }
 
-        // Removed
-        for key in self.attrs.keys() {
-            if !other.attrs.contains_key(key) {
-                changes.push(PropertyChange {
-                    key: key.clone(),
-                    old_value: self.attrs.get(key).cloned(),
-                    new_value: None,
-                });
-            }
-        }
-
-        changes
+        result
     }
 
     fn is_empty(&self) -> bool {
@@ -838,21 +830,25 @@ fn convert_ops_with_shadow(
                 // Path to the node containing the attributes
                 let path = shadow.compute_path(node_a);
 
-                // Convert cinereus PropertyChange to our PropChange
+                // Convert cinereus PropertyInFinalState to our PropChange
                 let prop_changes: Vec<PropChange> = changes
                     .into_iter()
                     .map(|c| PropChange {
                         name: c.key,
-                        value: c.new_value,
+                        value: match c.value {
+                            cinereus::tree::PropValue::Same => None,
+                            cinereus::tree::PropValue::Different(v) => Some(v),
+                        },
                     })
                     .collect();
 
-                if !prop_changes.is_empty() {
-                    result.push(Patch::UpdateProps {
-                        path: NodePath(path),
-                        changes: prop_changes,
-                    });
-                }
+                // Always generate UpdateProps - the changes vec represents the complete final
+                // state. An empty vec (or vec with only _text) means the element has no
+                // attributes in the final state.
+                result.push(Patch::UpdateProps {
+                    path: NodePath(path),
+                    changes: prop_changes,
+                });
                 // No structural change for UpdateProps
             }
 
