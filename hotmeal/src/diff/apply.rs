@@ -163,7 +163,7 @@ fn escape_attr(s: &str) -> String {
 
 /// Parse an HTML string into an Element tree, returning the body.
 pub fn parse_html(html: &str) -> Result<Element, String> {
-    Ok(crate::parse_untyped(html))
+    Ok(crate::parser::parse_untyped(html))
 }
 
 // =============================================================================

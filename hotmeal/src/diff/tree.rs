@@ -955,7 +955,7 @@ fn convert_ops_with_shadow(
                 );
 
                 // Debug: check what's at the target position BEFORE the move
-                if let Some(_parent_node) = shadow.arena.get(shadow_new_parent) {
+                if shadow.arena.get(shadow_new_parent).is_some() {
                     let children: Vec<_> = shadow_new_parent
                         .children(&shadow.arena)
                         .enumerate()
@@ -1288,12 +1288,12 @@ mod tests {
         let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
         debug!("Patches: {:#?}", patches);
 
-        let mut tree = super::super::apply::parse_html(old_html).expect("parse old failed");
-        super::super::apply::apply_patches(&mut tree, &patches).expect("apply failed");
+        let mut doc = crate::arena_dom::parse(old_html);
+        doc.apply_patches(&patches).expect("apply failed");
 
-        let result = tree.to_html();
-        let expected_tree = super::super::apply::parse_html(new_html).expect("parse new failed");
-        let expected = expected_tree.to_html();
+        let result = doc.to_html();
+        let expected_doc = crate::arena_dom::parse(new_html);
+        let expected = expected_doc.to_html();
 
         debug!("Result: {}", result);
         debug!("Expected: {}", expected);
@@ -1309,12 +1309,12 @@ mod tests {
         let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
         debug!("Patches: {:#?}", patches);
 
-        let mut tree = super::super::apply::parse_html(old_html).expect("parse old failed");
-        super::super::apply::apply_patches(&mut tree, &patches).expect("apply failed");
+        let mut doc = crate::arena_dom::parse(old_html);
+        doc.apply_patches(&patches).expect("apply failed");
 
-        let result = tree.to_html();
-        let expected_tree = super::super::apply::parse_html(new_html).expect("parse new failed");
-        let expected = expected_tree.to_html();
+        let result = doc.to_html();
+        let expected_doc = crate::arena_dom::parse(new_html);
+        let expected = expected_doc.to_html();
 
         debug!("Result: {}", result);
         debug!("Expected: {}", expected);
@@ -1357,12 +1357,12 @@ mod tests {
         let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
         debug!("Patches: {:#?}", patches);
 
-        let mut tree = super::super::apply::parse_html(old_html).expect("parse old failed");
-        super::super::apply::apply_patches(&mut tree, &patches).expect("apply failed");
+        let mut doc = crate::arena_dom::parse(old_html);
+        doc.apply_patches(&patches).expect("apply failed");
 
-        let result = tree.to_html();
-        let expected_tree = super::super::apply::parse_html(new_html).expect("parse new failed");
-        let expected = expected_tree.to_html();
+        let result = doc.to_html();
+        let expected_doc = crate::arena_dom::parse(new_html);
+        let expected = expected_doc.to_html();
 
         debug!("Result: {}", result);
         debug!("Expected: {}", expected);

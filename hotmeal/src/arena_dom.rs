@@ -15,6 +15,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use tendril::{StrTendril, TendrilSink};
 
+use crate::debug;
+use crate::diff::{InsertContent, NodeRef, Patch};
+
 /// Document = Arena (strings are StrTendrils with refcounted sharing)
 #[derive(Debug, Clone)]
 pub struct Document {
@@ -76,6 +79,367 @@ impl Document {
             }
         }
         output
+    }
+
+    /// Navigate to a node by path starting from body.
+    /// Returns the NodeId at the given path.
+    fn navigate_path(&self, path: &[usize]) -> Result<NodeId, String> {
+        let mut current = self.body().ok_or("no body element")?;
+
+        for &idx in path {
+            let mut children = current.children(&self.arena);
+            current = children
+                .nth(idx)
+                .ok_or_else(|| format!("path index {idx} out of bounds"))?;
+        }
+
+        Ok(current)
+    }
+
+    /// Get parent of a node by path. Returns (parent_id, child_index).
+    fn get_parent(&self, path: &[usize]) -> Result<(NodeId, usize), String> {
+        if path.is_empty() {
+            return Err("cannot get parent of empty path".to_string());
+        }
+
+        let parent_path = &path[..path.len() - 1];
+        let child_idx = path[path.len() - 1];
+        let parent_id = if parent_path.is_empty() {
+            self.body().ok_or("no body element")?
+        } else {
+            self.navigate_path(parent_path)?
+        };
+
+        Ok((parent_id, child_idx))
+    }
+
+    /// Apply patches to this document (modifying it in place).
+    pub fn apply_patches(&mut self, patches: &[Patch]) -> Result<(), String> {
+        // Slots hold NodeIds that were displaced during edits
+        let mut slots: HashMap<u32, NodeId> = HashMap::new();
+
+        for patch in patches {
+            self.apply_patch(patch, &mut slots)?;
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn apply_patch(
+        &mut self,
+        patch: &Patch,
+        slots: &mut HashMap<u32, NodeId>,
+    ) -> Result<(), String> {
+        debug!("Applying patch: {:#?}", patch);
+        match patch {
+            Patch::InsertElement {
+                at,
+                tag,
+                attrs,
+                children,
+                detach_to_slot,
+            } => {
+                // Create new element node
+                let elem_data = ElementData {
+                    tag: StrTendril::from(tag.as_str()),
+                    attrs: attrs
+                        .iter()
+                        .map(|(k, v)| (k.clone(), StrTendril::from(v.as_str())))
+                        .collect(),
+                };
+                let new_node = self.arena.new_node(NodeData {
+                    kind: NodeKind::Element(elem_data),
+                    ns: Namespace::Html,
+                });
+
+                // Add children to the new element
+                for child in children {
+                    let child_node = self.create_insert_content(child)?;
+                    new_node.append(child_node, &mut self.arena);
+                }
+
+                self.insert_at(at, new_node, *detach_to_slot, slots)?;
+            }
+            Patch::InsertText {
+                at,
+                text,
+                detach_to_slot,
+            } => {
+                let new_node = self.arena.new_node(NodeData {
+                    kind: NodeKind::Text(StrTendril::from(text.as_str())),
+                    ns: Namespace::Html,
+                });
+                self.insert_at(at, new_node, *detach_to_slot, slots)?;
+            }
+            Patch::Remove { node } => match node {
+                NodeRef::Path(path) => {
+                    // Replace with empty text node to preserve sibling positions
+                    let node_id = self.navigate_path(&path.0)?;
+                    let empty_text = self.arena.new_node(NodeData {
+                        kind: NodeKind::Text(StrTendril::new()),
+                        ns: Namespace::Html,
+                    });
+                    node_id.insert_before(empty_text, &mut self.arena);
+                    node_id.detach(&mut self.arena);
+                }
+                NodeRef::Slot(_slot, _rel_path) => {
+                    // Slots are already detached - just remove from map
+                    slots.remove(_slot);
+                }
+            },
+            Patch::SetText { path, text } => {
+                let node_id = self.navigate_path(&path.0)?;
+                let node_data = self.arena[node_id].get_mut();
+                if let NodeKind::Text(t) = &mut node_data.kind {
+                    *t = StrTendril::from(text.as_str());
+                } else {
+                    return Err("SetText: node is not a text node".to_string());
+                }
+            }
+            Patch::SetAttribute { path, name, value } => {
+                let node_id = self.navigate_path(&path.0)?;
+                let node_data = self.arena[node_id].get_mut();
+                if let NodeKind::Element(elem) = &mut node_data.kind {
+                    elem.attrs
+                        .insert(name.clone(), StrTendril::from(value.as_str()));
+                } else {
+                    return Err("SetAttribute: node is not an element".to_string());
+                }
+            }
+            Patch::RemoveAttribute { path, name } => {
+                let node_id = self.navigate_path(&path.0)?;
+                let node_data = self.arena[node_id].get_mut();
+                if let NodeKind::Element(elem) = &mut node_data.kind {
+                    elem.attrs.remove(name);
+                } else {
+                    return Err("RemoveAttribute: node is not an element".to_string());
+                }
+            }
+            Patch::Move {
+                from,
+                to,
+                detach_to_slot,
+            } => {
+                let node_to_move = self.resolve_node_ref(from, slots)?;
+
+                // Replace source position with empty text (no shifting!)
+                // Exception: Slot(_, None) means moving the entire slot root
+                let needs_replacement = match from {
+                    NodeRef::Path(_) => true,
+                    NodeRef::Slot(_, rel_path) => rel_path.is_some(),
+                };
+
+                if needs_replacement {
+                    let empty_text = self.arena.new_node(NodeData {
+                        kind: NodeKind::Text(StrTendril::new()),
+                        ns: Namespace::Html,
+                    });
+                    node_to_move.insert_before(empty_text, &mut self.arena);
+                    node_to_move.detach(&mut self.arena);
+                }
+
+                self.insert_at(to, node_to_move, *detach_to_slot, slots)?;
+            }
+            Patch::UpdateProps { path, changes } => {
+                let node_id = self.navigate_path(&path.0)?;
+                let node_data = self.arena[node_id].get_mut();
+
+                for change in changes {
+                    if change.name == "_text" {
+                        if let NodeKind::Text(t) = &mut node_data.kind
+                            && let Some(new_text) = &change.value
+                        {
+                            *t = StrTendril::from(new_text.as_str());
+                        }
+                    } else if let NodeKind::Element(elem) = &mut node_data.kind {
+                        if let Some(new_value) = &change.value {
+                            elem.attrs
+                                .insert(change.name.clone(), StrTendril::from(new_value.as_str()));
+                        } else {
+                            elem.attrs.remove(&change.name);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn resolve_node_ref(
+        &self,
+        node_ref: &NodeRef,
+        slots: &HashMap<u32, NodeId>,
+    ) -> Result<NodeId, String> {
+        match node_ref {
+            NodeRef::Path(path) => self.navigate_path(&path.0),
+            NodeRef::Slot(slot, rel_path) => {
+                let slot_node = slots
+                    .get(slot)
+                    .ok_or_else(|| format!("slot {slot} not found"))?;
+                if let Some(path) = rel_path {
+                    let mut current = *slot_node;
+                    for &idx in &path.0 {
+                        let mut children = current.children(&self.arena);
+                        current = children
+                            .nth(idx)
+                            .ok_or_else(|| format!("relative path index {idx} out of bounds"))?;
+                    }
+                    Ok(current)
+                } else {
+                    Ok(*slot_node)
+                }
+            }
+        }
+    }
+
+    fn insert_at(
+        &mut self,
+        at: &NodeRef,
+        node_to_insert: NodeId,
+        detach_to_slot: Option<u32>,
+        slots: &mut HashMap<u32, NodeId>,
+    ) -> Result<(), String> {
+        match at {
+            NodeRef::Path(path) => {
+                let (parent_id, position) = self.get_parent(&path.0)?;
+
+                if let Some(slot) = detach_to_slot {
+                    let children: Vec<_> = parent_id.children(&self.arena).collect();
+                    if position < children.len() {
+                        let displaced = children[position];
+                        displaced.detach(&mut self.arena);
+                        slots.insert(slot, displaced);
+                    }
+                }
+
+                self.insert_at_position(parent_id, position, node_to_insert)?;
+            }
+            NodeRef::Slot(slot, rel_path) => {
+                let slot_node = *slots
+                    .get(slot)
+                    .ok_or_else(|| format!("slot {slot} not found"))?;
+
+                if let Some(path) = rel_path {
+                    let parent_path = &path.0[..path.0.len() - 1];
+                    let position = path.0[path.0.len() - 1];
+
+                    debug!(
+                        "insert_at Slot: slot={}, slot_node={:?}, rel_path={:?}, position={}",
+                        slot, slot_node, path.0, position
+                    );
+
+                    let mut parent_id = slot_node;
+                    for &idx in parent_path {
+                        let mut children = parent_id.children(&self.arena);
+                        parent_id = children
+                            .nth(idx)
+                            .ok_or_else(|| format!("relative path index {idx} out of bounds"))?;
+                    }
+
+                    debug!(
+                        "insert_at Slot: after navigation, parent_id={:?}",
+                        parent_id
+                    );
+
+                    if let Some(new_slot) = detach_to_slot {
+                        let children: Vec<_> = parent_id.children(&self.arena).collect();
+                        debug!(
+                            "insert_at Slot: detaching at position {}, children.len()={}",
+                            position,
+                            children.len()
+                        );
+                        if position < children.len() {
+                            let displaced = children[position];
+                            displaced.detach(&mut self.arena);
+                            slots.insert(new_slot, displaced);
+                        }
+                    }
+
+                    self.insert_at_position(parent_id, position, node_to_insert)?;
+                } else {
+                    return Err("cannot insert at slot without relative path".to_string());
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn insert_at_position(
+        &mut self,
+        parent_id: NodeId,
+        position: usize,
+        node_to_insert: NodeId,
+    ) -> Result<(), String> {
+        let children: Vec<_> = parent_id.children(&self.arena).collect();
+
+        debug!(
+            "insert_at_position: parent={:?}, position={}, children.len()={}, node_to_insert={:?}",
+            parent_id,
+            position,
+            children.len(),
+            node_to_insert
+        );
+
+        // Chawathe semantics: fill gaps with empty text nodes
+        // If inserting at position 3 with 0 children, first insert empty text at 0, 1, 2
+        for i in children.len()..position {
+            let empty_text = self.arena.new_node(NodeData {
+                kind: NodeKind::Text(StrTendril::new()),
+                ns: Namespace::Html,
+            });
+            parent_id.append(empty_text, &mut self.arena);
+            debug!("Filled gap at position {} with empty text node", i);
+        }
+
+        // Now insert at the exact position
+        let children: Vec<_> = parent_id.children(&self.arena).collect();
+        if position >= children.len() {
+            parent_id.append(node_to_insert, &mut self.arena);
+        } else {
+            let next_sibling = children[position];
+            next_sibling.insert_before(node_to_insert, &mut self.arena);
+        }
+
+        Ok(())
+    }
+
+    fn create_insert_content(&mut self, content: &InsertContent) -> Result<NodeId, String> {
+        match content {
+            InsertContent::Element {
+                tag,
+                attrs,
+                children,
+            } => {
+                let elem_data = ElementData {
+                    tag: StrTendril::from(tag.as_str()),
+                    attrs: attrs
+                        .iter()
+                        .map(|(k, v)| (k.clone(), StrTendril::from(v.as_str())))
+                        .collect(),
+                };
+                let node = self.arena.new_node(NodeData {
+                    kind: NodeKind::Element(elem_data),
+                    ns: Namespace::Html,
+                });
+
+                for child in children {
+                    let child_node = self.create_insert_content(child)?;
+                    node.append(child_node, &mut self.arena);
+                }
+
+                Ok(node)
+            }
+            InsertContent::Text(text) => {
+                let node = self.arena.new_node(NodeData {
+                    kind: NodeKind::Text(StrTendril::from(text.as_str())),
+                    ns: Namespace::Html,
+                });
+                Ok(node)
+            }
+        }
     }
 
     fn serialize_node(&self, out: &mut String, node_id: NodeId) {
@@ -323,14 +687,32 @@ impl TreeSink for ArenaSink {
         a == b
     }
 
-    fn elem_name<'a>(&'a self, _target: &'a Self::Handle) -> OwnedElemName {
-        // html5ever only calls this for debugging/error messages
-        // Return a placeholder - we don't actually need this for parsing
-        OwnedElemName(QualName {
-            prefix: None,
-            ns: ns!(html),
-            local: local_name!(""),
-        })
+    fn elem_name<'a>(&'a self, target: &'a Self::Handle) -> OwnedElemName {
+        let arena = self.arena.borrow();
+        let node = &arena[*target].get();
+
+        if let NodeKind::Element(elem) = &node.kind {
+            let tag = elem.tag.as_ref();
+            let local_name = LocalName::from(tag);
+            let ns = match node.ns {
+                Namespace::Html => ns!(html),
+                Namespace::Svg => ns!(svg),
+                Namespace::MathMl => ns!(mathml),
+            };
+
+            OwnedElemName(QualName {
+                prefix: None,
+                ns,
+                local: local_name,
+            })
+        } else {
+            // Not an element - return placeholder
+            OwnedElemName(QualName {
+                prefix: None,
+                ns: ns!(html),
+                local: local_name!(""),
+            })
+        }
     }
 
     fn create_element(
@@ -386,12 +768,16 @@ impl TreeSink for ArenaSink {
             }
             NodeOrText::AppendText(text) => {
                 // Try to merge with previous text node (html5ever behavior)
-                if let Some(last_child) = parent.children(&*arena).next_back()
-                    && let NodeKind::Text(existing) = &mut arena[last_child].get_mut().kind
-                {
-                    // Merge text - push_tendril shares buffers when possible
-                    existing.push_tendril(&text);
-                    return;
+                // First get the last child ID (if any) without holding a borrow
+                let last_child_id = parent.children(&arena).next_back();
+
+                if let Some(last_child) = last_child_id {
+                    // Now we can safely get mutable access
+                    if let NodeKind::Text(existing) = &mut arena[last_child].get_mut().kind {
+                        // Merge text - push_tendril shares buffers when possible
+                        existing.push_tendril(&text);
+                        return;
+                    }
                 }
 
                 // Create new text node (StrTendril clone is cheap - refcounted)
@@ -399,7 +785,7 @@ impl TreeSink for ArenaSink {
                     kind: NodeKind::Text(text),
                     ns: Namespace::Html,
                 });
-                parent.append(text_node, &mut *arena);
+                parent.append(text_node, &mut arena);
             }
         }
     }
@@ -673,5 +1059,44 @@ mod tests {
         assert!(output.contains("src=\"test.png\">"));
         assert!(!output.contains("</br>"));
         assert!(!output.contains("</img>"));
+    }
+
+    #[test]
+    fn test_apply_patches_roundtrip() {
+        // Test that we can diff two arena_dom documents and apply patches
+        let old_html = "<html><body><div>Old content</div></body></html>";
+        let new_html = "<html><body><div>New content</div></body></html>";
+
+        let old_doc = parse(old_html);
+        let new_doc = parse(new_html);
+
+        // Generate patches
+        let patches =
+            crate::diff::diff_arena_documents(&old_doc, &new_doc).expect("diff should succeed");
+
+        // Apply patches to a fresh copy of old
+        let mut mut_old_doc = parse(old_html);
+        mut_old_doc
+            .apply_patches(&patches)
+            .expect("patches should apply");
+
+        // Check result matches new
+        assert_eq!(mut_old_doc.to_html(), new_doc.to_html());
+    }
+
+    #[test]
+    fn test_apply_patches_insert_element() {
+        let old_html = "<html><body><div>First</div></body></html>";
+        let new_html = "<html><body><div>First</div><p>Second</p></body></html>";
+
+        let old_doc = parse(old_html);
+        let new_doc = parse(new_html);
+
+        let patches = crate::diff::diff_arena_documents(&old_doc, &new_doc).expect("diff failed");
+
+        let mut mut_old_doc = parse(old_html);
+        mut_old_doc.apply_patches(&patches).expect("apply failed");
+
+        assert_eq!(mut_old_doc.to_html(), new_doc.to_html());
     }
 }

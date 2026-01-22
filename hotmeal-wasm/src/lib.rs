@@ -610,7 +610,7 @@ pub fn dump_rust_parsed(html: &str) -> Result<String, JsValue> {
     use hotmeal::diff::{Content, Element};
 
     let full_html = format!("<html><body>{}</body></html>", html);
-    let parsed: Element = hotmeal::parse_untyped(&full_html);
+    let parsed: Element = hotmeal::parser::parse_untyped(&full_html);
 
     fn dump_element(elem: &Element, indent: usize) -> String {
         let prefix = "  ".repeat(indent);

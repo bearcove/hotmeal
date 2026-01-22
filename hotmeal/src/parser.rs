@@ -49,21 +49,22 @@ pub fn parse_untyped(html: &str) -> DiffElement {
 
 /// Parse an HTML string into an untyped Document.
 ///
-/// This is the primary parsing function - it accepts any HTML that browsers accept,
-/// using html5ever's full error recovery, and produces a simple Element/Node tree.
+/// DEPRECATED: Use `hotmeal::arena_dom::parse` instead for better performance.
 ///
 /// # Example
 ///
 /// ```rust
-/// use hotmeal::parse_document;
-/// use hotmeal::untyped_dom::Node;
+/// use hotmeal::arena_dom;
 ///
-/// let doc = parse_document("<!DOCTYPE html><html><body><p>Hello!</p></body></html>");
-/// assert_eq!(doc.doctype, Some("html".to_string()));
+/// let doc = arena_dom::parse("<!DOCTYPE html><html><body><p>Hello!</p></body></html>");
+/// assert_eq!(doc.doctype.as_ref().map(|s| s.as_ref()), Some("html"));
 ///
-/// if let Some(body) = doc.body() {
-///     if let Some(Node::Element(p)) = body.children.first() {
-///         assert_eq!(p.tag, "p");
+/// if let Some(body_id) = doc.body() {
+///     for child_id in body_id.children(&doc.arena) {
+///         let node = doc.get(child_id);
+///         if let arena_dom::NodeKind::Element(elem) = &node.kind {
+///             assert_eq!(elem.tag.as_ref(), "p");
+///         }
 ///     }
 /// }
 /// ```
@@ -78,19 +79,7 @@ pub fn parse_document(html: &str) -> Document {
 
 /// Parse an HTML fragment and return the body element.
 ///
-/// Use this when you have an HTML fragment (not a complete document).
-/// html5ever will wrap it appropriately.
-///
-/// # Example
-///
-/// ```rust
-/// use hotmeal::parse_body;
-/// use hotmeal::untyped_dom::Node;
-///
-/// let body = parse_body("<p>Hello!</p><p>World!</p>");
-/// assert_eq!(body.tag, "body");
-/// assert_eq!(body.children.len(), 2);
-/// ```
+/// DEPRECATED: Use `hotmeal::arena_dom::parse` instead for better performance.
 pub fn parse_body(html: &str) -> Element {
     let sink = HtmlSink::default();
     let sink = html5ever::parse_document(sink, Default::default())
