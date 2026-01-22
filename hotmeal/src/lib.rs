@@ -34,6 +34,7 @@
 
 mod tracing_macros;
 
+pub mod arena_dom;
 pub mod diff;
 mod parser;
 pub mod serialize;
