@@ -795,4 +795,117 @@ mod tests {
         // so we compare serialized output rather than tree structure)
         assert_eq!(tree.to_html(), new.to_html(), "HTML output should match");
     }
+
+    #[test]
+    fn test_diff_complex_fuzzer_case() {
+        // Fuzzer found: <body><strong>old_text</strong></body> -> <body>new_text<strong>updated</strong></body>
+        let old = Element {
+            tag: "body".to_string(),
+            attrs: HashMap::new(),
+            children: vec![Content::Element(Element {
+                tag: "strong".to_string(),
+                attrs: HashMap::new(),
+                children: vec![Content::Text("old".to_string())],
+            })],
+        };
+        let new = Element {
+            tag: "body".to_string(),
+            attrs: HashMap::new(),
+            children: vec![
+                Content::Text("new_text".to_string()),
+                Content::Element(Element {
+                    tag: "strong".to_string(),
+                    attrs: HashMap::new(),
+                    children: vec![Content::Text("updated".to_string())],
+                }),
+            ],
+        };
+
+        let patches = diff_elements(&old, &new).unwrap();
+        eprintln!("Patches: {:#?}", patches);
+
+        let mut tree = old.clone();
+        super::super::apply::apply_patches(&mut tree, &patches).expect("apply should succeed");
+
+        eprintln!("Result: {}", tree.to_html());
+        eprintln!("Expected: {}", new.to_html());
+        assert_eq!(tree.to_html(), new.to_html(), "HTML output should match");
+    }
+
+    #[test]
+    fn test_diff_actual_fuzzer_crash() {
+        // Actual fuzzer crash case (simplified):
+        // Old: <strong>text1</strong><strong>text2</strong><img>
+        // New: text3<strong>text4</strong>
+        let old = Element {
+            tag: "body".to_string(),
+            attrs: HashMap::new(),
+            children: vec![
+                Content::Element(Element {
+                    tag: "strong".to_string(),
+                    attrs: HashMap::new(),
+                    children: vec![Content::Text("text1".to_string())],
+                }),
+                Content::Element(Element {
+                    tag: "strong".to_string(),
+                    attrs: HashMap::new(),
+                    children: vec![Content::Text("text2".to_string())],
+                }),
+                Content::Element(Element {
+                    tag: "img".to_string(),
+                    attrs: HashMap::new(),
+                    children: vec![],
+                }),
+            ],
+        };
+        let new = Element {
+            tag: "body".to_string(),
+            attrs: HashMap::new(),
+            children: vec![
+                Content::Text("text3".to_string()),
+                Content::Element(Element {
+                    tag: "strong".to_string(),
+                    attrs: HashMap::new(),
+                    children: vec![Content::Text("text4".to_string())],
+                }),
+            ],
+        };
+
+        let patches = diff_elements(&old, &new).unwrap();
+        eprintln!("Patches: {:#?}", patches);
+
+        let mut tree = old.clone();
+        super::super::apply::apply_patches(&mut tree, &patches).expect("apply should succeed");
+
+        eprintln!("Result: {}", tree.to_html());
+        eprintln!("Expected: {}", new.to_html());
+        assert_eq!(tree.to_html(), new.to_html(), "HTML output should match");
+    }
+
+    #[test]
+    #[ignore] // TODO: Bug in path tracking after displacement operations
+    fn test_fuzzer_special_chars() {
+        // Test with actual fuzzer input that has special chars
+        // html5ever parses "<jva       xx a >" as an element, creating nested structure
+        // The bug: UpdateProps at [1,0] followed by Remove at [1,0] - we update text then delete it!
+        // This appears to be a path tracking bug when handling complex displacement scenarios.
+        let old_html = r#"<html><body><strong>n<&nhnnz"""" v</strong><strong>< bit<jva       xx a ></strong><img src="n" alt="v"></body></html>"#;
+        let new_html = r#"<html><body>n<strong>aaa</strong></body></html>"#;
+
+        let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
+        eprintln!("Patches: {:#?}", patches);
+
+        let mut tree = super::super::apply::parse_html(old_html).expect("parse old failed");
+        eprintln!("Old tree: {:#?}", tree);
+
+        super::super::apply::apply_patches(&mut tree, &patches).expect("apply failed");
+
+        let result = tree.to_html();
+        let expected_tree = super::super::apply::parse_html(new_html).expect("parse new failed");
+        let expected = expected_tree.to_html();
+
+        eprintln!("Result: {}", result);
+        eprintln!("Expected: {}", expected);
+        assert_eq!(result, expected, "HTML output should match");
+    }
 }
