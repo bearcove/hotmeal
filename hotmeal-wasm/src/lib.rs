@@ -377,25 +377,45 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
 
         Patch::UpdateProps { path, changes } => {
             let node = find_node(doc, path, slots)?;
-            for change in changes {
-                if change.name == "_text" {
-                    // Special handling for _text property - sets text content
-                    // Works on both text nodes and elements
-                    match &change.value {
-                        Some(v) => node.set_text_content(Some(v)),
-                        None => node.set_text_content(None),
+
+            // Handle text content updates
+            if let Some(text_change) = changes.iter().find(|c| c.name == "_text")
+                && let Some(v) = &text_change.value
+            {
+                node.set_text_content(Some(v));
+            }
+            // None means keep existing - do nothing
+
+            // Handle element attribute updates
+            // The changes vec represents the ENTIRE final attribute state
+            if let Some(el) = node.dyn_ref::<Element>() {
+                // Collect attribute names in changes (excluding _text)
+                let final_attrs: std::collections::HashSet<_> = changes
+                    .iter()
+                    .filter(|c| c.name != "_text")
+                    .map(|c| c.name.as_str())
+                    .collect();
+
+                // Remove attributes not in final state
+                let current_attrs: Vec<String> = (0..el.attributes().length())
+                    .filter_map(|i| el.attributes().item(i).map(|a| a.name()))
+                    .collect();
+
+                for attr_name in current_attrs {
+                    if !final_attrs.contains(attr_name.as_str()) {
+                        el.remove_attribute(&attr_name)?;
                     }
-                } else {
-                    // Regular attribute - requires an element
-                    let el = node.dyn_ref::<Element>().ok_or_else(|| {
-                        JsValue::from_str(
-                            "UpdateProps: node is not an element for attribute change",
-                        )
-                    })?;
-                    match &change.value {
-                        Some(v) => el.set_attribute(&change.name, v)?,
-                        None => el.remove_attribute(&change.name)?,
+                }
+
+                // Set attributes from changes
+                for change in changes {
+                    if change.name != "_text"
+                        && let Some(new_value) = &change.value
+                    {
+                        // Different value - update it
+                        el.set_attribute(&change.name, new_value)?;
                     }
+                    // None means keep existing - do nothing (attribute already exists)
                 }
             }
         }
