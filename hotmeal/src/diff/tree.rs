@@ -734,7 +734,7 @@ fn convert_ops_with_shadow(
                         ?detach_to_slot,
                         "After Insert - checking parent state"
                     );
-                    if let Some(parent_node) = shadow.arena.get(shadow_parent) {
+                    if let Some(_parent_node) = shadow.arena.get(shadow_parent) {
                         let children: Vec<_> = shadow_parent
                             .children(&shadow.arena)
                             .enumerate()
@@ -804,7 +804,7 @@ fn convert_ops_with_shadow(
                 );
 
                 // Debug: check what's at the target position BEFORE the move
-                if let Some(parent_node) = shadow.arena.get(shadow_new_parent) {
+                if let Some(_parent_node) = shadow.arena.get(shadow_new_parent) {
                     let children: Vec<_> = shadow_new_parent
                         .children(&shadow.arena)
                         .enumerate()
@@ -826,13 +826,12 @@ fn convert_ops_with_shadow(
                 debug!(?node_a, ?from, ?to, ?detach_to_slot, "Generated Move patch");
 
                 // Debug: if we displaced something, check what the shadow tree thinks vs what will happen
-                if let Some(slot) = detach_to_slot {
-                    if let Some((displaced_node, _)) =
+                if let Some(slot) = detach_to_slot
+                    && let Some((displaced_node, _)) =
                         shadow.detached_nodes.iter().find(|(_, s)| **s == slot)
-                    {
-                        let displaced_data = &shadow.arena[*displaced_node].get();
-                        debug!(slot, ?displaced_node, kind = ?displaced_data.kind, "Shadow tree displaced to slot");
-                    }
+                {
+                    let displaced_data = &shadow.arena[*displaced_node].get();
+                    debug!(slot, ?displaced_node, kind = ?displaced_data.kind, "Shadow tree displaced to slot");
                 }
 
                 result.push(Patch::Move {

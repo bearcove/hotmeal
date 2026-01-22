@@ -517,8 +517,6 @@ dependencies = [
  "datatest-stable",
  "divan",
  "facet",
- "facet-core",
- "facet-reflect",
  "facet-testhelpers",
  "html5ever",
  "rapidhash",

@@ -84,8 +84,8 @@ pub struct PropChange {
 pub enum Patch {
     /// Insert an element at a position.
     /// The `at` NodeRef includes the position as the last path segment.
-    /// For Path(NodePath([a, b, c])), insert at position c within parent at path [a, b].
-    /// For Slot(n, Some(NodePath([a, b]))), insert at position b within element at path [a] in slot n.
+    /// For Path(NodePath(\[a, b, c\])), insert at position c within parent at path \[a, b\].
+    /// For Slot(n, Some(NodePath(\[a, b\]))), insert at position b within element at path \[a\] in slot n.
     InsertElement {
         at: NodeRef,
         tag: String,
