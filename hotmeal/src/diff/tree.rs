@@ -314,16 +314,29 @@ impl ShadowTree {
     fn get_node_ref(&self, node: NodeId) -> NodeRef {
         // Check if directly detached
         if let Some(&slot) = self.detached_nodes.get(&node) {
+            debug!(?node, slot, "get_node_ref: node is directly in slot");
             return NodeRef::Slot(slot, None);
         }
 
         // Check if ancestor is detached
         if let Some((slot, rel_path)) = self.find_detached_ancestor(node) {
+            debug!(
+                ?node,
+                slot,
+                ?rel_path,
+                "get_node_ref: node has detached ancestor"
+            );
+            // Check what's actually in the slot
+            if let Some((slot_node, _)) = self.detached_nodes.iter().find(|(_, s)| **s == slot) {
+                let slot_data = &self.arena[*slot_node].get();
+                debug!(?slot_node, kind = ?slot_data.kind, "get_node_ref: slot contains");
+            }
             return NodeRef::Slot(slot, rel_path);
         }
 
         // Node is in tree - compute path
         let path = self.compute_path(node);
+        debug!(?node, ?path, "get_node_ref: node is in tree at path");
         NodeRef::Path(NodePath(path))
     }
 
@@ -677,8 +690,8 @@ fn convert_ops_with_shadow(
 
                 b_to_shadow.insert(node_b, new_node);
 
-                // Get parent reference - shadow.get_node_ref() handles all cases!
-                let parent = shadow.get_node_ref(shadow_parent);
+                // Get reference with position included - this makes Insert consistent with Move!
+                let at = shadow.get_node_ref_with_position(shadow_parent, position);
 
                 // Create the patch based on node kind
                 match kind {
@@ -690,8 +703,7 @@ fn convert_ops_with_shadow(
                             &nodes_with_insert_ops,
                         );
                         result.push(Patch::InsertElement {
-                            parent,
-                            position,
+                            at,
                             tag,
                             attrs,
                             children,
@@ -706,8 +718,7 @@ fn convert_ops_with_shadow(
                             .clone()
                             .unwrap_or_default();
                         result.push(Patch::InsertText {
-                            parent,
-                            position,
+                            at,
                             text,
                             detach_to_slot,
                         });
@@ -715,7 +726,27 @@ fn convert_ops_with_shadow(
                 }
 
                 #[cfg(test)]
-                shadow.debug_print_tree("After Insert");
+                {
+                    // Debug: print what's at the insertion position after Insert
+                    debug!(
+                        ?shadow_parent,
+                        position,
+                        ?detach_to_slot,
+                        "After Insert - checking parent state"
+                    );
+                    if let Some(parent_node) = shadow.arena.get(shadow_parent) {
+                        let children: Vec<_> = shadow_parent
+                            .children(&shadow.arena)
+                            .enumerate()
+                            .map(|(i, child)| {
+                                let data = &shadow.arena[child].get();
+                                (i, child, &data.kind)
+                            })
+                            .collect();
+                        debug!(?children, "Parent children after Insert");
+                    }
+                    shadow.debug_print_tree("After Insert");
+                }
             }
 
             EditOp::Delete { node_a } => {
@@ -752,8 +783,38 @@ fn convert_ops_with_shadow(
                     .copied()
                     .unwrap_or(shadow.root);
 
+                debug!(
+                    ?node_a,
+                    ?new_parent_b,
+                    ?shadow_new_parent,
+                    ?new_position,
+                    "Move: starting"
+                );
+
                 // Get source reference - handles all cases automatically!
+                debug!(?node_a, "Move: computing from reference for node");
                 let from = shadow.get_node_ref(node_a);
+                debug!(?node_a, ?from, "Move: computed from reference");
+
+                // Check if parent is detached
+                let parent_is_detached = shadow.detached_nodes.contains_key(&shadow_new_parent);
+                debug!(
+                    ?shadow_new_parent,
+                    parent_is_detached, "Move: checking if parent is detached"
+                );
+
+                // Debug: check what's at the target position BEFORE the move
+                if let Some(parent_node) = shadow.arena.get(shadow_new_parent) {
+                    let children: Vec<_> = shadow_new_parent
+                        .children(&shadow.arena)
+                        .enumerate()
+                        .map(|(i, child)| {
+                            let data = &shadow.arena[child].get();
+                            (i, child, &data.kind)
+                        })
+                        .collect();
+                    debug!(?children, "Parent children BEFORE Move");
+                }
 
                 // Move node to new position - handles displacement automatically!
                 let detach_to_slot =
@@ -761,6 +822,18 @@ fn convert_ops_with_shadow(
 
                 // Get target reference with position - handles all cases automatically!
                 let to = shadow.get_node_ref_with_position(shadow_new_parent, new_position);
+
+                debug!(?node_a, ?from, ?to, ?detach_to_slot, "Generated Move patch");
+
+                // Debug: if we displaced something, check what the shadow tree thinks vs what will happen
+                if let Some(slot) = detach_to_slot {
+                    if let Some((displaced_node, _)) =
+                        shadow.detached_nodes.iter().find(|(_, s)| **s == slot)
+                    {
+                        let displaced_data = &shadow.arena[*displaced_node].get();
+                        debug!(slot, ?displaced_node, kind = ?displaced_data.kind, "Shadow tree displaced to slot");
+                    }
+                }
 
                 result.push(Patch::Move {
                     from,
@@ -1130,6 +1203,49 @@ mod tests {
         // Fuzzer found "patch at index 4 is out of order" error
         let old_html = r#"<!DOCTYPE html><html><body><ol start="0"></ol></body></html>"#;
         let new_html = r#"<html><body><ol start="255"></ol><ol start="93"></ol><ol start="91"><ol start="1"><a href="vaaaaaaaaaaaaa"></a></ol></ol></body></html>"#;
+
+        let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
+        debug!("Patches: {:#?}", patches);
+
+        let mut tree = super::super::apply::parse_html(old_html).expect("parse old failed");
+        super::super::apply::apply_patches(&mut tree, &patches).expect("apply failed");
+
+        let result = tree.to_html();
+        let expected_tree = super::super::apply::parse_html(new_html).expect("parse new failed");
+        let expected = expected_tree.to_html();
+
+        debug!("Result: {}", result);
+        debug!("Expected: {}", expected);
+        assert_eq!(result, expected, "HTML output should match");
+    }
+
+    #[test]
+    fn test_fuzzer_slot_contains_text() {
+        // Fuzzer found "Move: slot contains text, cannot navigate to child" error
+        let old_html = r#"<!DOCTYPE html><html><body><article><code><</code><code><</code><code><</code><code><</code></article></body></html>"#;
+        let new_html = r#"<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd"><html><body><code><</code><code><</code><code><</code><code><</code><article><code><</code><code><</code><h2><<<<<<<<<<<<<</h2></article></body></html>"#;
+
+        let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
+        debug!("Patches: {:#?}", patches);
+
+        let mut tree = super::super::apply::parse_html(old_html).expect("parse old failed");
+        super::super::apply::apply_patches(&mut tree, &patches).expect("apply failed");
+
+        let result = tree.to_html();
+        let expected_tree = super::super::apply::parse_html(new_html).expect("parse new failed");
+        let expected = expected_tree.to_html();
+
+        debug!("Result: {}", result);
+        debug!("Expected: {}", expected);
+        assert_eq!(result, expected, "HTML output should match");
+    }
+
+    #[test]
+    fn test_fuzzer_article_code_move() {
+        // Fuzzer found "Move: slot contains text, cannot navigate to child"
+        // Fuzzer generates unescaped HTML
+        let old_html = r#"<!DOCTYPE html><html><body><article><code><</code><code><</code><code><</code><code><</code><article><article><code><</code></article></article></article></body></html>"#;
+        let new_html = r#"<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd"><html><body><code><</code><code><</code><code><</code><code><</code><article><code><</code><code><</code><h2><<<<<<<<<<<<<</h2></article></body></html>"#;
 
         let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
         debug!("Patches: {:#?}", patches);

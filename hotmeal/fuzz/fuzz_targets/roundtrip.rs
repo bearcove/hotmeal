@@ -416,6 +416,9 @@ fuzz_target!(|input: FuzzInput| {
 
     let patches = hotmeal::diff::diff_html(&old_html, &new_html).expect("diff failed");
     let mut tree = hotmeal::diff::parse_html(&old_html).expect("parse old failed");
+    // eprintln!("OLD HTML: {}", old_html);
+    // eprintln!("NEW HTML: {}", new_html);
+    // eprintln!("PATCHES: {:?}", patches);
     hotmeal::diff::apply_patches(&mut tree, &patches).expect("apply failed");
 
     let result = tree.to_html();
