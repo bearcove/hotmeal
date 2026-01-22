@@ -790,4 +790,78 @@ mod tests {
             assert_eq!(changes[0].key, "id", "The change should be for 'id'");
         }
     }
+
+    #[test]
+    #[ignore] // TODO: Need to create proper test with Properties that differentiate text content
+    fn test_move_from_deleted_parent() {
+        // Test case: child node matched, but its parent is unmatched (will be deleted).
+        // The child should be MOVEd to its new location.
+        //
+        // This matches the HTML fuzzer scenario:
+        // Old: strong#1(text "old"), strong#2(text "foo")
+        // New: strong(text "foo")
+        // Where strong#1 matches new strong, and text "foo" from strong#2 should move to it.
+        //
+        // Old tree:
+        // root
+        //   ├─ elem1 (matched)
+        //   │   └─ text "old"
+        //   └─ elem2 (unmatched - will be deleted)
+        //       └─ text "foo" (matched - should move to elem1)
+        //
+        // New tree:
+        // root
+        //   └─ elem1 (matched)
+        //       └─ text "foo" (matched)
+
+        let mut tree_a: Tree<TestTypes> = Tree::new(NodeData::simple_u64(1, "root"));
+        let elem1 = tree_a.add_child(tree_a.root, NodeData::simple_u64(2, "elem"));
+        let _text_old = tree_a.add_child(
+            elem1,
+            NodeData::simple_leaf_u64(3, "text", "old".to_string()),
+        );
+        let elem2 = tree_a.add_child(tree_a.root, NodeData::simple_u64(4, "elem"));
+        let text_foo = tree_a.add_child(
+            elem2,
+            NodeData::simple_leaf_u64(5, "text", "foo".to_string()),
+        );
+
+        let mut tree_b: Tree<TestTypes> = Tree::new(NodeData::simple_u64(10, "root"));
+        let elem1_b = tree_b.add_child(tree_b.root, NodeData::simple_u64(20, "elem"));
+        let _text_foo_b = tree_b.add_child(
+            elem1_b,
+            NodeData::simple_leaf_u64(30, "text", "foo".to_string()),
+        );
+
+        let config = MatchingConfig {
+            min_height: 0, // Include leaves in matching
+            ..MatchingConfig::default()
+        };
+        let matching = compute_matching(&tree_a, &tree_b, &config);
+        let ops = generate_edit_script(&tree_a, &tree_b, &matching);
+
+        debug!(?ops, "Generated operations");
+
+        // Check if there's a Move operation for text_foo
+        let move_ops: Vec<_> = ops
+            .iter()
+            .filter_map(|op| {
+                if let EditOp::Move { node_a, .. } = op {
+                    Some(node_a)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        debug!(?move_ops, text_foo_id = ?text_foo, "Move operations");
+
+        let has_move = move_ops.iter().any(|&&node_a| node_a == text_foo);
+
+        assert!(
+            has_move,
+            "Expected Move operation for text node moving from deleted parent.\nOps: {:#?}",
+            ops
+        );
+    }
 }
