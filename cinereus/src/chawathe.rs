@@ -225,21 +225,9 @@ pub fn generate_edit_script<T: TreeTypes>(
             continue;
         };
 
-        // Skip if the target parent is not matched (i.e., it's an inserted node or inside an inserted subtree).
-        // In this case, the node is "moving" into a newly inserted subtree, which means the matching
-        // was incorrect - the node should have been matched with a node under a matched parent.
-        // Rather than emit a broken Move, skip it. The content will appear via the Insert.
-        if !matching.contains_b(parent_b) {
-            trace!(
-                a = usize::from(a_id),
-                b = usize::from(b_id),
-                parent_b = usize::from(parent_b),
-                "skipping move: target parent not matched"
-            );
-            continue;
-        }
-
-        // Check if parent changed
+        // Check if parent changed (even if target parent is unmatched/inserted).
+        // When a matched node moves to an unmatched parent, we still need to emit the Move
+        // so the node can be relocated. The Insert of the parent won't include matched children.
         let parent_match = matching.get_b(parent_a);
         let parent_changed = parent_match != Some(parent_b);
 

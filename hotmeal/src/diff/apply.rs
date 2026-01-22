@@ -405,9 +405,44 @@ fn apply_patch(
                     // Swap with placeholder instead of remove (no shifting!)
                     std::mem::replace(&mut from_children[from_idx], Content::Text(String::new()))
                 }
-                NodeRef::Slot(slot, _relative_path) => slots
-                    .remove(slot)
-                    .ok_or_else(|| format!("Move: slot {slot} not found"))?,
+                NodeRef::Slot(slot, relative_path) => {
+                    if let Some(rel_path) = relative_path {
+                        // Moving a child from within the slotted content
+                        if rel_path.0.is_empty() {
+                            return Err("Move: relative path cannot be empty".to_string());
+                        }
+
+                        let slot_content = slots
+                            .get_mut(slot)
+                            .ok_or_else(|| format!("Move: slot {slot} not found"))?;
+
+                        match slot_content {
+                            Content::Element(e) => {
+                                let children = navigate_to_children_in_slot(e, Some(rel_path))?;
+                                let from_idx = rel_path.0[rel_path.0.len() - 1];
+                                if from_idx >= children.len() {
+                                    return Err(format!(
+                                        "Move: slot child index {from_idx} out of bounds"
+                                    ));
+                                }
+                                // Extract the child (replace with placeholder)
+                                std::mem::replace(
+                                    &mut children[from_idx],
+                                    Content::Text(String::new()),
+                                )
+                            }
+                            Content::Text(_) => {
+                                return Err("Move: slot contains text, cannot navigate to child"
+                                    .to_string());
+                            }
+                        }
+                    } else {
+                        // Moving the entire slot content
+                        slots
+                            .remove(slot)
+                            .ok_or_else(|| format!("Move: slot {slot} not found"))?
+                    }
+                }
             };
 
             // Place the content at the target location (either in tree or in a slot)

@@ -9,7 +9,7 @@ use crate::chawathe::EditOp;
 use crate::tree::{Tree, TreeTypes};
 use crate::{debug, trace};
 use indextree::NodeId;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Simplify an edit script by consolidating subtree operations.
 ///
@@ -26,6 +26,7 @@ pub fn simplify_edit_script<T: TreeTypes>(
     let mut inserted_nodes: HashSet<NodeId> = HashSet::new();
     let mut deleted_nodes: HashSet<NodeId> = HashSet::new();
     let mut moved_nodes_b: HashSet<NodeId> = HashSet::new();
+    let mut move_pairs: HashMap<NodeId, NodeId> = HashMap::new(); // node_b -> node_a
 
     for op in &ops {
         match op {
@@ -35,8 +36,9 @@ pub fn simplify_edit_script<T: TreeTypes>(
             EditOp::Delete { node_a } => {
                 deleted_nodes.insert(*node_a);
             }
-            EditOp::Move { node_b, .. } => {
+            EditOp::Move { node_a, node_b, .. } => {
                 moved_nodes_b.insert(*node_b);
+                move_pairs.insert(*node_b, *node_a);
             }
             EditOp::UpdateProperties { .. } => {}
         }
@@ -72,13 +74,41 @@ pub fn simplify_edit_script<T: TreeTypes>(
         .copied()
         .collect();
 
+    // For moves, a child move is only dominated if the parent relationship exists
+    // in BOTH tree_a and tree_b. Otherwise, the nodes are structurally unrelated
+    // in the source tree and the child move must be preserved.
     let root_moves: HashSet<NodeId> = moved_nodes_b
         .iter()
-        .filter(|&&node| {
-            tree_b
-                .parent(node)
-                .map(|p| !moved_nodes_b.contains(&p))
-                .unwrap_or(true)
+        .filter(|&&node_b| {
+            // Check if parent is being moved in tree_b
+            let parent_b_moving = tree_b
+                .parent(node_b)
+                .map(|p_b| moved_nodes_b.contains(&p_b))
+                .unwrap_or(false);
+
+            if !parent_b_moving {
+                // Parent not being moved in tree_b - this is a root move
+                return true;
+            }
+
+            // Parent is being moved in tree_b. Check if they were ALSO parent-child in tree_a.
+            let node_a = move_pairs.get(&node_b).copied().unwrap();
+            let parent_a_in_tree_a = tree_a.parent(node_a);
+
+            if let Some(parent_a) = parent_a_in_tree_a {
+                // Find what parent_b maps to in tree_a
+                let parent_b = tree_b.parent(node_b).unwrap();
+                if let Some(&parent_a_from_move) = move_pairs.get(&parent_b) {
+                    // Both nodes are being moved. Check if they were parent-child in tree_a.
+                    if parent_a == parent_a_from_move {
+                        // They were parent-child in BOTH trees - child move is dominated
+                        return false;
+                    }
+                }
+            }
+
+            // Not dominated - this is a root move
+            true
         })
         .copied()
         .collect();

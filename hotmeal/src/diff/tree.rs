@@ -12,7 +12,7 @@ use cinereus::{
     indextree::{self, NodeId},
 };
 use rapidhash::RapidHasher;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use super::apply::{Content, Element};
@@ -267,7 +267,9 @@ pub fn diff_elements(old: &Element, new: &Element) -> Result<Vec<Patch>, String>
 
     // Generate edit script with the matching (including forced root match)
     let edit_ops = cinereus::generate_edit_script(&tree_a, &tree_b, &matching);
-    let edit_ops = cinereus::simplify_edit_script(edit_ops, &tree_a, &tree_b);
+    // Disable simplification for now - it creates semantic mismatches where cinereus
+    // expects positions to be empty but we've included content from simplified Inserts
+    // let edit_ops = cinereus::simplify_edit_script(edit_ops, &tree_a, &tree_b);
 
     #[cfg(test)]
     {
@@ -437,6 +439,37 @@ impl ShadowTree {
         self.detached_nodes.remove(&node);
     }
 
+    /// Pretty-print the shadow tree for debugging.
+    #[allow(dead_code)]
+    fn debug_print_tree(&self, _title: &str) {
+        debug!("=== {} ===", _title);
+        self.debug_print_node(self.root, 0);
+        if !self.detached_nodes.is_empty() {
+            debug!("Detached nodes:");
+            for (&node, &_slot) in &self.detached_nodes {
+                debug!("  Slot {}: {:?}", _slot, node);
+                self.debug_print_node(node, 2);
+            }
+        }
+        debug!("===");
+    }
+
+    fn debug_print_node(&self, node: NodeId, depth: usize) {
+        let _indent = "  ".repeat(depth);
+        let data = &self.arena[node].get();
+        let _kind_str = match &data.kind {
+            HtmlNodeKind::Element(tag) => format!("<{}>", tag),
+            HtmlNodeKind::Text => {
+                let text = data.properties.text.as_deref().unwrap_or("");
+                format!("#text({:?})", text.chars().take(20).collect::<String>())
+            }
+        };
+        debug!("{}{:?} {}", _indent, node, _kind_str);
+        for child in node.children(&self.arena) {
+            self.debug_print_node(child, depth + 1);
+        }
+    }
+
     /// Insert a new node at a position, handling displacement via slots.
     /// Returns the slot number if an occupant was displaced.
     fn insert_at_position(
@@ -556,7 +589,20 @@ fn convert_ops_with_shadow(
         b_to_shadow.insert(b_id, a_id);
     }
 
+    // Collect all nodes that have explicit Insert operations in the ops list.
+    // These should not be included as children during extract_content_from_tree_b.
+    let nodes_with_insert_ops: HashSet<NodeId> = ops
+        .iter()
+        .filter_map(|op| match op {
+            EditOp::Insert { node_b, .. } => Some(*node_b),
+            _ => None,
+        })
+        .collect();
+
     let mut result = Vec::new();
+
+    #[cfg(test)]
+    shadow.debug_print_tree("Initial shadow tree");
 
     // Process operations in cinereus order.
     // For each op: update shadow tree, THEN compute paths from updated state.
@@ -619,7 +665,12 @@ fn convert_ops_with_shadow(
                 // Create the patch based on node kind
                 match kind {
                     HtmlNodeKind::Element(tag) => {
-                        let (attrs, children) = extract_content_from_tree_b(node_b, tree_b);
+                        let (attrs, children) = extract_content_from_tree_b(
+                            node_b,
+                            tree_b,
+                            &b_to_shadow,
+                            &nodes_with_insert_ops,
+                        );
                         result.push(Patch::InsertElement {
                             parent,
                             position,
@@ -644,6 +695,9 @@ fn convert_ops_with_shadow(
                         });
                     }
                 }
+
+                #[cfg(test)]
+                shadow.debug_print_tree("After Insert");
             }
 
             EditOp::Delete { node_a } => {
@@ -663,6 +717,9 @@ fn convert_ops_with_shadow(
                 }
 
                 result.push(Patch::Remove { node });
+
+                #[cfg(test)]
+                shadow.debug_print_tree("After Delete");
             }
 
             EditOp::Move {
@@ -695,6 +752,9 @@ fn convert_ops_with_shadow(
 
                 // Update b_to_shadow
                 b_to_shadow.insert(node_b, node_a);
+
+                #[cfg(test)]
+                shadow.debug_print_tree("After Move");
             }
         }
     }
@@ -706,6 +766,8 @@ fn convert_ops_with_shadow(
 fn extract_content_from_tree_b(
     node_b: NodeId,
     tree_b: &Tree<HtmlTreeTypes>,
+    b_to_shadow: &HashMap<NodeId, NodeId>,
+    nodes_with_insert_ops: &HashSet<NodeId>,
 ) -> (Vec<(String, String)>, Vec<InsertContent>) {
     let data = tree_b.get(node_b);
     let attrs: Vec<_> = data
@@ -718,10 +780,22 @@ fn extract_content_from_tree_b(
     // Get children
     let mut children = Vec::new();
     for child_id in tree_b.children(node_b) {
+        // Skip children that:
+        // 1. Are matched (will be handled by Move operations)
+        // 2. Have their own Insert operations (not simplified away)
+        if b_to_shadow.contains_key(&child_id) || nodes_with_insert_ops.contains(&child_id) {
+            continue;
+        }
+
         let child_data = tree_b.get(child_id);
         match &child_data.kind {
             HtmlNodeKind::Element(tag) => {
-                let (child_attrs, child_children) = extract_content_from_tree_b(child_id, tree_b);
+                let (child_attrs, child_children) = extract_content_from_tree_b(
+                    child_id,
+                    tree_b,
+                    b_to_shadow,
+                    nodes_with_insert_ops,
+                );
                 children.push(InsertContent::Element {
                     tag: tag.clone(),
                     attrs: child_attrs,
@@ -937,7 +1011,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Bug: detached node not found when parent moved"]
     fn test_fuzzer_special_chars() {
         trace!("what");
 
@@ -954,6 +1027,69 @@ mod tests {
         let mut tree = super::super::apply::parse_html(old_html).expect("parse old failed");
         trace!("Old tree: {:#?}", tree);
 
+        super::super::apply::apply_patches(&mut tree, &patches).expect("apply failed");
+
+        let result = tree.to_html();
+        let expected_tree = super::super::apply::parse_html(new_html).expect("parse new failed");
+        let expected = expected_tree.to_html();
+
+        debug!("Result: {}", result);
+        debug!("Expected: {}", expected);
+        assert_eq!(result, expected, "HTML output should match");
+    }
+
+    #[test]
+    fn test_fuzzer_img_li_roundtrip() {
+        // Fuzzer found roundtrip failure with img and li elements
+        let old_html = r#"<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd"><html><body><p>Unclosed paragraph<span class=""></span><div>Inside P which browsers will auto-close</div><span>Unclosed span<div>Block in span</div></body></html>"#;
+        let new_html = r#"<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd"><html><body><img src="vvv" alt="ttt">d <li>d<<<&<<a"d <<<</li></body></html>"#;
+
+        let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
+        debug!("Patches: {:#?}", patches);
+
+        let mut tree = super::super::apply::parse_html(old_html).expect("parse old failed");
+        super::super::apply::apply_patches(&mut tree, &patches).expect("apply failed");
+
+        let result = tree.to_html();
+        let expected_tree = super::super::apply::parse_html(new_html).expect("parse new failed");
+        let expected = expected_tree.to_html();
+
+        debug!("Result: {}", result);
+        debug!("Expected: {}", expected);
+        assert_eq!(result, expected, "HTML output should match");
+    }
+
+    #[test]
+    fn test_fuzzer_nested_ul_remove() {
+        // Fuzzer found issue with nested ul elements - img not being removed correctly
+        let old_html = r#"<!DOCTYPE html><html><body><ul class="h"><ul class="z"><img src="vvv" alt="wvv"><ul class="h"><img src="vvv"></ul></ul></ul></body></html>"#;
+        let new_html = r#"<!DOCTYPE html><html><body><ul class="h"><ul class="h"></ul><ul class="q"><img src="aaa"></ul></ul></body></html>"#;
+
+        let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
+        debug!("Patches: {:#?}", patches);
+
+        let mut tree = super::super::apply::parse_html(old_html).expect("parse old failed");
+        super::super::apply::apply_patches(&mut tree, &patches).expect("apply failed");
+
+        let result = tree.to_html();
+        let expected_tree = super::super::apply::parse_html(new_html).expect("parse new failed");
+        let expected = expected_tree.to_html();
+
+        debug!("Result: {}", result);
+        debug!("Expected: {}", expected);
+        assert_eq!(result, expected, "HTML output should match");
+    }
+
+    #[test]
+    fn test_fuzzer_em_li_navigate_text() {
+        // Fuzzer found "Insert: cannot navigate through text node" error
+        let old_html = r#"<html><body><em> &lt;v&lt;      &lt;&lt; v</em></body></html>"#;
+        let new_html = r#"<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html><body><li>a&lt; &lt;v&lt;      &lt;&lt;</li><img src=""></body></html>"#;
+
+        let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
+        debug!("Patches: {:#?}", patches);
+
+        let mut tree = super::super::apply::parse_html(old_html).expect("parse old failed");
         super::super::apply::apply_patches(&mut tree, &patches).expect("apply failed");
 
         let result = tree.to_html();
