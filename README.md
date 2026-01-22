@@ -4,8 +4,6 @@
 [![documentation](https://docs.rs/cinereus/badge.svg)](https://docs.rs/cinereus)
 [![MIT licensed](https://img.shields.io/crates/l/cinereus.svg)](./LICENSE)
 
-# hotmeal
-
 hotmeal is an HTML toolkit based on facet, html5ever, and cinereus (for diff-patching).
 
 It allows patching HTML documents into a DOM the way browsers would do, manipulating the DOM,
