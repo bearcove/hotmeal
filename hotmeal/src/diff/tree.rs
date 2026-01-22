@@ -27,6 +27,8 @@ pub enum HtmlNodeKind {
     Element(String),
     /// A text node
     Text,
+    /// A comment node
+    Comment,
 }
 
 impl std::fmt::Display for HtmlNodeKind {
@@ -34,6 +36,7 @@ impl std::fmt::Display for HtmlNodeKind {
         match self {
             HtmlNodeKind::Element(tag) => write!(f, "<{}>", tag),
             HtmlNodeKind::Text => write!(f, "#text"),
+            HtmlNodeKind::Comment => write!(f, "#comment"),
         }
     }
 }
@@ -227,8 +230,19 @@ fn add_arena_children(
                 };
                 tree.add_child(parent, data);
             }
-            arena_dom::NodeKind::Comment(_) => {
-                // Skip comments for diffing
+            arena_dom::NodeKind::Comment(text) => {
+                let kind = HtmlNodeKind::Comment;
+                let props = HtmlProps {
+                    attrs: IndexMap::new(),
+                    text: Some(text.as_ref().to_string()),
+                };
+                let data = NodeData {
+                    hash: NodeHash(0),
+                    kind,
+                    label: Some(child_path),
+                    properties: props,
+                };
+                tree.add_child(parent, data);
             }
             arena_dom::NodeKind::Document => {
                 // Skip document nodes
@@ -258,6 +272,10 @@ fn add_children(
                 let data = make_text_node_data(text, child_path);
                 tree.add_child(parent, data);
             }
+            Content::Comment(comment) => {
+                let data = make_comment_node_data(comment, child_path);
+                tree.add_child(parent, data);
+            }
         }
     }
 }
@@ -282,6 +300,21 @@ fn make_text_node_data(text: &str, path: NodePath) -> NodeData<HtmlTreeTypes> {
     let props = HtmlProps {
         attrs: IndexMap::new(),
         text: Some(text.to_string()),
+    };
+    // Hash will be recomputed later
+    NodeData {
+        hash: NodeHash(0),
+        kind,
+        label: Some(path),
+        properties: props,
+    }
+}
+
+fn make_comment_node_data(comment: &str, path: NodePath) -> NodeData<HtmlTreeTypes> {
+    let kind = HtmlNodeKind::Comment;
+    let props = HtmlProps {
+        attrs: IndexMap::new(),
+        text: Some(comment.to_string()),
     };
     // Hash will be recomputed later
     NodeData {
@@ -480,6 +513,7 @@ impl ShadowTree {
             );
             // Check what's actually in the slot
             if let Some((slot_node, _)) = self.detached_nodes.iter().find(|(_, s)| **s == slot) {
+                #[allow(unused_variables)]
                 let slot_data = &self.arena[*slot_node].get();
                 debug!(?slot_node, kind = ?slot_data.kind, "get_node_ref: slot contains");
             }
@@ -623,6 +657,10 @@ impl ShadowTree {
             HtmlNodeKind::Text => {
                 let text = data.properties.text.as_deref().unwrap_or("");
                 format!("#text({:?})", text.chars().take(20).collect::<String>())
+            }
+            HtmlNodeKind::Comment => {
+                let text = data.properties.text.as_deref().unwrap_or("");
+                format!("#comment({:?})", text.chars().take(20).collect::<String>())
             }
         };
         debug!("{}{:?} {}", _indent, node, _kind_str);
@@ -875,6 +913,19 @@ fn convert_ops_with_shadow(
                             detach_to_slot,
                         });
                     }
+                    HtmlNodeKind::Comment => {
+                        let text = tree_b
+                            .get(node_b)
+                            .properties
+                            .text
+                            .clone()
+                            .unwrap_or_default();
+                        result.push(Patch::InsertComment {
+                            at,
+                            text,
+                            detach_to_slot,
+                        });
+                    }
                 }
 
                 #[cfg(test)]
@@ -949,6 +1000,7 @@ fn convert_ops_with_shadow(
                 debug!(?node_a, ?from, "Move: computed from reference");
 
                 // Check if parent is detached
+                #[allow(unused_variables)]
                 let parent_is_detached = shadow.detached_nodes.contains_key(&shadow_new_parent);
                 debug!(
                     ?shadow_new_parent,
@@ -957,6 +1009,7 @@ fn convert_ops_with_shadow(
 
                 // Debug: check what's at the target position BEFORE the move
                 if shadow.arena.get(shadow_new_parent).is_some() {
+                    #[allow(unused_variables)]
                     let children: Vec<_> = shadow_new_parent
                         .children(&shadow.arena)
                         .enumerate()
@@ -982,6 +1035,7 @@ fn convert_ops_with_shadow(
                     && let Some((displaced_node, _)) =
                         shadow.detached_nodes.iter().find(|(_, s)| **s == slot)
                 {
+                    #[allow(unused_variables)]
                     let displaced_data = &shadow.arena[*displaced_node].get();
                     debug!(slot, ?displaced_node, kind = ?displaced_data.kind, "Shadow tree displaced to slot");
                 }
@@ -1047,6 +1101,10 @@ fn extract_content_from_tree_b(
             HtmlNodeKind::Text => {
                 let text = child_data.properties.text.clone().unwrap_or_default();
                 children.push(InsertContent::Text(text));
+            }
+            HtmlNodeKind::Comment => {
+                let text = child_data.properties.text.clone().unwrap_or_default();
+                children.push(InsertContent::Comment(text));
             }
         }
     }

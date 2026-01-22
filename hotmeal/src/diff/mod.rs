@@ -70,6 +70,8 @@ pub enum InsertContent {
     },
     /// A text node
     Text(String),
+    /// A comment node
+    Comment(String),
 }
 
 /// A single property change within an UpdateProps operation.
@@ -100,6 +102,14 @@ pub enum Patch {
     /// Insert a text node at a position.
     /// The `at` NodeRef includes the position as the last path segment.
     InsertText {
+        at: NodeRef,
+        text: String,
+        detach_to_slot: Option<u32>,
+    },
+
+    /// Insert a comment node at a position.
+    /// The `at` NodeRef includes the position as the last path segment.
+    InsertComment {
         at: NodeRef,
         text: String,
         detach_to_slot: Option<u32>,

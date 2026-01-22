@@ -22,7 +22,7 @@ pub struct Element {
     pub children: Vec<Content>,
 }
 
-/// DOM content - either an element or text.
+/// DOM content - either an element, text, or comment.
 #[derive(Debug, Clone, PartialEq, Eq, facet::Facet)]
 #[repr(u8)]
 pub enum Content {
@@ -31,6 +31,8 @@ pub enum Content {
     /// A text node
     #[facet(text)]
     Text(String),
+    /// A comment node
+    Comment(String),
 }
 
 impl Element {
@@ -45,6 +47,9 @@ impl Element {
             current = match child {
                 Content::Element(e) => e,
                 Content::Text(_) => return Err("cannot navigate through text node".to_string()),
+                Content::Comment(_) => {
+                    return Err("cannot navigate through comment node".to_string());
+                }
             };
         }
         Ok(&mut current.children)
@@ -61,6 +66,9 @@ impl Element {
             current = match child {
                 Content::Element(e) => e,
                 Content::Text(_) => return Err("cannot navigate through text node".to_string()),
+                Content::Comment(_) => {
+                    return Err("cannot navigate through comment node".to_string());
+                }
             };
         }
         Ok(&mut current.attrs)
@@ -119,6 +127,7 @@ impl Element {
             match child {
                 Content::Text(t) => out.push_str(t),
                 Content::Element(e) => e.collect_text(out),
+                Content::Comment(_) => {} // Comments don't contribute to text content
             }
         }
     }
@@ -129,6 +138,11 @@ impl Content {
         match self {
             Content::Text(t) => out.push_str(&escape_text(t)),
             Content::Element(e) => e.write_html(out),
+            Content::Comment(c) => {
+                out.push_str("<!--");
+                out.push_str(c);
+                out.push_str("-->");
+            }
         }
     }
 }
@@ -206,7 +220,7 @@ impl TryFrom<&crate::untyped_dom::Node> for Content {
         match n {
             crate::untyped_dom::Node::Element(e) => Ok(Content::Element(Element::from(e))),
             crate::untyped_dom::Node::Text(t) => Ok(Content::Text(t.clone())),
-            crate::untyped_dom::Node::Comment(_) => Err(()), // Skip comments
+            crate::untyped_dom::Node::Comment(c) => Ok(Content::Comment(c.clone())),
         }
     }
 }
@@ -218,7 +232,7 @@ impl TryFrom<crate::untyped_dom::Node> for Content {
         match n {
             crate::untyped_dom::Node::Element(e) => Ok(Content::Element(Element::from(e))),
             crate::untyped_dom::Node::Text(t) => Ok(Content::Text(t)),
-            crate::untyped_dom::Node::Comment(_) => Err(()), // Skip comments
+            crate::untyped_dom::Node::Comment(c) => Ok(Content::Comment(c)),
         }
     }
 }
@@ -245,6 +259,7 @@ impl From<&Content> for crate::untyped_dom::Node {
                 crate::untyped_dom::Node::Element(crate::untyped_dom::Element::from(e))
             }
             Content::Text(t) => crate::untyped_dom::Node::Text(t.clone()),
+            Content::Comment(c) => crate::untyped_dom::Node::Comment(c.clone()),
         }
     }
 }
@@ -268,6 +283,9 @@ fn navigate_to_children_in_slot<'a>(
                 Content::Element(e) => e,
                 Content::Text(_) => {
                     return Err("cannot navigate through text node".to_string());
+                }
+                Content::Comment(_) => {
+                    return Err("cannot navigate through comment node".to_string());
                 }
             };
         }
@@ -322,6 +340,16 @@ fn apply_patch(
             debug!(?at, text, "InsertText: about to insert");
 
             let new_content = Content::Text(text.clone());
+            insert_at_node_ref(root, slots, at, new_content, *detach_to_slot)?;
+        }
+        Patch::InsertComment {
+            at,
+            text,
+            detach_to_slot,
+        } => {
+            debug!(?at, text, "InsertComment: about to insert");
+
+            let new_content = Content::Comment(text.clone());
             insert_at_node_ref(root, slots, at, new_content, *detach_to_slot)?;
         }
         Patch::Remove { node } => {
@@ -391,7 +419,9 @@ fn apply_patch(
             );
 
             // Debug: show what's in each slot
+            #[allow(unused_variables)]
             for (slot_id, content) in slots.iter() {
+                #[allow(unused_variables)]
                 let desc = match content {
                     Content::Element(e) => {
                         let children_desc: Vec<_> = e
@@ -403,6 +433,9 @@ fn apply_patch(
                                 Content::Text(t) => {
                                     format!("Text({:?})", t.chars().take(10).collect::<String>())
                                 }
+                                Content::Comment(c) => {
+                                    format!("Comment({:?})", c.chars().take(10).collect::<String>())
+                                }
                             })
                             .collect();
                         format!(
@@ -413,6 +446,9 @@ fn apply_patch(
                     }
                     Content::Text(t) => {
                         format!("Text({:?})", t.chars().take(30).collect::<String>())
+                    }
+                    Content::Comment(c) => {
+                        format!("Comment({:?})", c.chars().take(30).collect::<String>())
                     }
                 };
                 debug!(slot = slot_id, content = %desc, "Slot contents");
@@ -480,6 +516,12 @@ fn apply_patch(
                                 return Err(format!(
                                     "Move: slot {} contains text ({:?}), cannot navigate to child with path {:?}",
                                     slot, text, rel_path
+                                ));
+                            }
+                            Content::Comment(comment) => {
+                                return Err(format!(
+                                    "Move: slot {} contains comment ({:?}), cannot navigate to child with path {:?}",
+                                    slot, comment, rel_path
                                 ));
                             }
                         }
@@ -561,6 +603,11 @@ fn apply_patch(
                                     "Move: target slot contains text, not element".to_string()
                                 );
                             }
+                            Content::Comment(_) => {
+                                return Err(
+                                    "Move: target slot contains comment, not element".to_string()
+                                );
+                            }
                         };
 
                         if to_idx < target_children.len() {
@@ -588,6 +635,11 @@ fn apply_patch(
                         }
                         Content::Text(_) => {
                             return Err("Move: target slot contains text, not element".to_string());
+                        }
+                        Content::Comment(_) => {
+                            return Err(
+                                "Move: target slot contains comment, not element".to_string()
+                            );
                         }
                     };
 
@@ -650,6 +702,11 @@ fn apply_update_props(
                         elem.children.retain(|c| !matches!(c, Content::Text(_)));
                     }
                 }
+                Content::Comment(_) => {
+                    return Err(
+                        "UpdateProps: cannot set _text property on comment node".to_string()
+                    );
+                }
             }
         } else {
             // Regular attribute - only valid on elements
@@ -664,6 +721,12 @@ fn apply_update_props(
                 Content::Text(_) => {
                     return Err(format!(
                         "UpdateProps: cannot set attribute '{}' on text node",
+                        change.name
+                    ));
+                }
+                Content::Comment(_) => {
+                    return Err(format!(
+                        "UpdateProps: cannot set attribute '{}' on comment node",
                         change.name
                     ));
                 }
@@ -731,6 +794,11 @@ fn insert_at_node_ref(
                 Some(Content::Text(_)) => {
                     return Err(format!(
                         "Insert: slot {parent_slot} contains text, not an element"
+                    ));
+                }
+                Some(Content::Comment(_)) => {
+                    return Err(format!(
+                        "Insert: slot {parent_slot} contains comment, not an element"
                     ));
                 }
                 None => return Err(format!("Insert: slot {parent_slot} not found")),
@@ -806,6 +874,11 @@ fn insert_at_position(
                         "Insert: slot {parent_slot} contains text, not an element"
                     ));
                 }
+                Some(Content::Comment(_)) => {
+                    return Err(format!(
+                        "Insert: slot {parent_slot} contains comment, not an element"
+                    ));
+                }
                 None => return Err(format!("Insert: slot {parent_slot} not found")),
             };
 
@@ -849,5 +922,6 @@ fn insert_content_to_content(ic: &InsertContent) -> Content {
             children: children.iter().map(insert_content_to_content).collect(),
         }),
         InsertContent::Text(s) => Content::Text(s.clone()),
+        InsertContent::Comment(s) => Content::Comment(s.clone()),
     }
 }

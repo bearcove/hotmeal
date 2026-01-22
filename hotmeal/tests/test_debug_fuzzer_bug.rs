@@ -1,6 +1,6 @@
 //! Debug the specific fuzzer bug
 
-use hotmeal::diff::{InsertContent, NodePath, NodeRef, Patch};
+use hotmeal::diff::{NodePath, NodeRef, Patch};
 
 #[test]
 fn test_minimal_repro() {

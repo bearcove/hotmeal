@@ -173,6 +173,17 @@ impl Document {
                 });
                 self.insert_at(at, new_node, *detach_to_slot, slots)?;
             }
+            Patch::InsertComment {
+                at,
+                text,
+                detach_to_slot,
+            } => {
+                let new_node = self.arena.new_node(NodeData {
+                    kind: NodeKind::Comment(StrTendril::from(text.as_str())),
+                    ns: Namespace::Html,
+                });
+                self.insert_at(at, new_node, *detach_to_slot, slots)?;
+            }
             Patch::Remove { node } => match node {
                 NodeRef::Path(path) => {
                     // Replace with empty text node to preserve sibling positions
@@ -386,6 +397,7 @@ impl Document {
 
         // Chawathe semantics: fill gaps with empty text nodes
         // If inserting at position 3 with 0 children, first insert empty text at 0, 1, 2
+        #[allow(unused_variables)]
         for i in children.len()..position {
             let empty_text = self.arena.new_node(NodeData {
                 kind: NodeKind::Text(StrTendril::new()),
@@ -436,6 +448,13 @@ impl Document {
             InsertContent::Text(text) => {
                 let node = self.arena.new_node(NodeData {
                     kind: NodeKind::Text(StrTendril::from(text.as_str())),
+                    ns: Namespace::Html,
+                });
+                Ok(node)
+            }
+            InsertContent::Comment(text) => {
+                let node = self.arena.new_node(NodeData {
+                    kind: NodeKind::Comment(StrTendril::from(text.as_str())),
                     ns: Namespace::Html,
                 });
                 Ok(node)
