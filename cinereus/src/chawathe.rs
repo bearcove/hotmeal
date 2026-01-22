@@ -202,12 +202,26 @@ pub fn generate_edit_script<T: TreeTypes>(
     }
 
     // Phase 4: MOVE - matched nodes where parent or position changed
+    debug!("Phase 4: MOVE - checking {} matched pairs", matching.len());
     for (a_id, b_id) in matching.pairs() {
+        debug!(
+            a = usize::from(a_id),
+            b = usize::from(b_id),
+            "checking matched pair for move"
+        );
         // Skip root
         let Some(parent_a) = tree_a.parent(a_id) else {
+            debug!(
+                a = usize::from(a_id),
+                "skipping: no parent in tree_a (root)"
+            );
             continue;
         };
         let Some(parent_b) = tree_b.parent(b_id) else {
+            debug!(
+                b = usize::from(b_id),
+                "skipping: no parent in tree_b (root)"
+            );
             continue;
         };
 
@@ -216,6 +230,12 @@ pub fn generate_edit_script<T: TreeTypes>(
         // was incorrect - the node should have been matched with a node under a matched parent.
         // Rather than emit a broken Move, skip it. The content will appear via the Insert.
         if !matching.contains_b(parent_b) {
+            trace!(
+                a = usize::from(a_id),
+                b = usize::from(b_id),
+                parent_b = usize::from(parent_b),
+                "skipping move: target parent not matched"
+            );
             continue;
         }
 
@@ -228,6 +248,19 @@ pub fn generate_edit_script<T: TreeTypes>(
         let pos_b = tree_b.position(b_id);
         let position_changed = pos_a != pos_b;
 
+        trace!(
+            a = usize::from(a_id),
+            b = usize::from(b_id),
+            parent_a = usize::from(parent_a),
+            parent_b = usize::from(parent_b),
+            ?parent_match,
+            parent_changed,
+            pos_a,
+            pos_b,
+            position_changed,
+            "move phase: checking node"
+        );
+
         if parent_changed || position_changed {
             ops.push(EditOp::Move {
                 node_a: a_id,
@@ -235,6 +268,11 @@ pub fn generate_edit_script<T: TreeTypes>(
                 new_parent_b: parent_b,
                 new_position: pos_b,
             });
+            trace!(
+                a = usize::from(a_id),
+                b = usize::from(b_id),
+                "emitting move operation"
+            );
         }
     }
 

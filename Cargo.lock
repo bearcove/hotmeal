@@ -523,6 +523,7 @@ dependencies = [
  "html5ever",
  "rapidhash",
  "tendril",
+ "tracing",
 ]
 
 [[package]]

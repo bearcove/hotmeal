@@ -3,6 +3,7 @@
 //! For property testing: apply(A, diff(A, B)) == B
 
 use super::{InsertContent, NodePath, NodeRef, Patch, PropChange};
+use crate::debug;
 use std::collections::HashMap;
 use std::fmt::Write;
 

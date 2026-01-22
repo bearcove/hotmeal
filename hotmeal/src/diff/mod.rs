@@ -19,9 +19,6 @@
 //! hotmeal::diff::apply_patches(&mut old_diff, &patches).expect("patches should apply");
 //! ```
 
-#[macro_use]
-mod tracing_macros;
-
 mod apply;
 mod tree;
 
