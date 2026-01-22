@@ -318,16 +318,6 @@ fn convert_ops_with_shadow(
     let mut detached_nodes: HashMap<NodeId, u32> = HashMap::new();
     let mut next_slot: u32 = 0;
 
-    // Track deleted nodes (including their descendants)
-    // When a node is deleted, it and all its children are no longer reachable
-    let mut deleted_nodes: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
-
-    // Defer UpdateProps patches until after structural changes
-    // This is critical because paths computed before INSERT/MOVE operations
-    // become stale after the shadow tree structure changes.
-    let mut deferred_updates: Vec<(NodeId, Vec<cinereus::PropertyChange<String, String>>)> =
-        Vec::new();
-
     // Process operations in cinereus order.
     // For each op: update shadow tree, THEN compute paths from updated state.
     for op in ops {
@@ -337,9 +327,23 @@ fn convert_ops_with_shadow(
                 node_b: _,
                 changes,
             } => {
-                // Defer path computation until after all structural changes
-                if !changes.is_empty() {
-                    deferred_updates.push((node_a, changes));
+                // Path to the node containing the attributes
+                let path = compute_path_in_shadow(&shadow_arena, shadow_root, node_a);
+
+                // Convert cinereus PropertyChange to our PropChange
+                let prop_changes: Vec<PropChange> = changes
+                    .into_iter()
+                    .map(|c| PropChange {
+                        name: c.key,
+                        value: c.new_value,
+                    })
+                    .collect();
+
+                if !prop_changes.is_empty() {
+                    result.push(Patch::UpdateProps {
+                        path: NodePath(path),
+                        changes: prop_changes,
+                    });
                 }
                 // No structural change for UpdateProps
             }
@@ -430,13 +434,6 @@ fn convert_ops_with_shadow(
             }
 
             EditOp::Delete { node_a } => {
-                // Mark this node and all descendants as deleted
-                deleted_nodes.insert(node_a);
-                for descendant in node_a.descendants(&shadow_arena).skip(1) {
-                    // skip(1) skips node_a itself which we already inserted
-                    deleted_nodes.insert(descendant);
-                }
-
                 // Check if the node or any ancestor is currently detached (in a slot)
                 let node = if let Some(slot) = detached_nodes.remove(&node_a) {
                     // Node is directly in a slot - delete from slot
@@ -553,46 +550,6 @@ fn convert_ops_with_shadow(
                 b_to_shadow.insert(node_b, node_a);
             }
         }
-    }
-
-    // Now process deferred UpdateProps patches with accurate paths
-    // After all structural changes (INSERT/MOVE/DELETE), the shadow tree
-    // reflects the final structure, so we can compute stable paths.
-    for (node_a, changes) in deferred_updates {
-        // Skip updates to deleted nodes
-        if deleted_nodes.contains(&node_a) {
-            continue;
-        }
-
-        // Check if node is detached (in a slot) or in the tree
-        let path = if detached_nodes.contains_key(&node_a) {
-            // Node is in a slot - skip the update
-            // (Slots should eventually be moved back or deleted)
-            continue;
-        } else if let Some((_slot, _relative_path)) =
-            find_detached_ancestor(&shadow_arena, node_a, &detached_nodes)
-        {
-            // An ancestor is in a slot - the node is inside a detached subtree
-            // Skip updates to detached nodes
-            continue;
-        } else {
-            // Node is in the tree - compute its current path
-            compute_path_in_shadow(&shadow_arena, shadow_root, node_a)
-        };
-
-        // Convert cinereus PropertyChange to our PropChange
-        let prop_changes: Vec<PropChange> = changes
-            .into_iter()
-            .map(|c| PropChange {
-                name: c.key,
-                value: c.new_value,
-            })
-            .collect();
-
-        result.push(Patch::UpdateProps {
-            path: NodePath(path),
-            changes: prop_changes,
-        });
     }
 
     Ok(result)
@@ -926,23 +883,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // TODO: Suboptimal matching leads to updates on deleted nodes
+    #[ignore] // TODO: Bug in path tracking after displacement operations
     fn test_fuzzer_special_chars() {
-        // Test with actual fuzzer input that has special chars.
-        // html5ever parses "<jva       xx a >" as an element, creating nested structure:
-        // Old: strong[text], strong[text, jva], img
-        // New: text, strong[text]
-        //
-        // Cinereus makes a suboptimal matching:
-        // - Matches old strong#2's text to new strong's text
-        // - Generates UpdateProps for that text
-        // - But then deletes strong#2 entirely!
-        //
-        // Result: The update is correctly skipped (our fix), but the final tree
-        // is missing the text because the source node was deleted.
-        //
-        // This is a fundamental limitation of the Chawathe algorithm when matching
-        // is poor. The proper fix is to improve matching quality in cinereus.
+        // Test with actual fuzzer input that has special chars
+        // html5ever parses "<jva       xx a >" as an element, creating nested structure
+        // The bug: UpdateProps at [1,0] followed by Remove at [1,0] - we update text then delete it!
+        // This appears to be a path tracking bug when handling complex displacement scenarios.
         let old_html = r#"<html><body><strong>n<&nhnnz"""" v</strong><strong>< bit<jva       xx a ></strong><img src="n" alt="v"></body></html>"#;
         let new_html = r#"<html><body>n<strong>aaa</strong></body></html>"#;
 
