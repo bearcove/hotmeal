@@ -30,9 +30,26 @@ tendril = { workspace = true }
 [dev-dependencies]
 facet-testhelpers = { workspace = true }
 datatest-stable = { workspace = true }
+divan = "0.1"
 
 [[test]]
 name = "roundtrip"
+harness = false
+
+[[bench]]
+name = "parsing"
+harness = false
+
+[[bench]]
+name = "diffing"
+harness = false
+
+[[bench]]
+name = "serialization"
+harness = false
+
+[[bench]]
+name = "full_cycle"
 harness = false
 
 [lints]
