@@ -11,6 +11,7 @@ use cinereus::{
     TreeTypes,
     indextree::{self, NodeId},
 };
+use indexmap::IndexMap;
 use rapidhash::RapidHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -40,8 +41,8 @@ impl std::fmt::Display for HtmlNodeKind {
 /// HTML element properties (attributes + text content).
 #[derive(Debug, Clone, Default)]
 pub struct HtmlProps {
-    /// Element attributes
-    pub attrs: HashMap<String, String>,
+    /// Element attributes (preserves insertion order)
+    pub attrs: IndexMap<String, String>,
     /// Text content (for text nodes)
     pub text: Option<String>,
 }
@@ -160,7 +161,7 @@ pub fn build_tree_from_arena(doc: &arena_dom::Document) -> Tree<HtmlTreeTypes> {
         kind: HtmlNodeKind::Element(body_tag.to_string()),
         label: Some(NodePath(vec![])),
         properties: HtmlProps {
-            attrs: HashMap::new(),
+            attrs: IndexMap::new(),
             text: None,
         },
     };
@@ -215,7 +216,7 @@ fn add_arena_children(
             arena_dom::NodeKind::Text(text) => {
                 let kind = HtmlNodeKind::Text;
                 let props = HtmlProps {
-                    attrs: HashMap::new(),
+                    attrs: IndexMap::new(),
                     text: Some(text.as_ref().to_string()),
                 };
                 let data = NodeData {
@@ -279,7 +280,7 @@ fn make_element_node_data(elem: &Element, path: NodePath) -> NodeData<HtmlTreeTy
 fn make_text_node_data(text: &str, path: NodePath) -> NodeData<HtmlTreeTypes> {
     let kind = HtmlNodeKind::Text;
     let props = HtmlProps {
-        attrs: HashMap::new(),
+        attrs: IndexMap::new(),
         text: Some(text.to_string()),
     };
     // Hash will be recomputed later
@@ -655,7 +656,7 @@ impl ShadowTree {
                     label: None,
                     properties: HtmlProps {
                         text: Some(String::new()),
-                        attrs: HashMap::new(),
+                        attrs: IndexMap::new(),
                     },
                 });
                 parent.append(placeholder, &mut self.arena);
@@ -1062,7 +1063,7 @@ mod tests {
     fn test_build_tree_simple() {
         let elem = Element {
             tag: "div".to_string(),
-            attrs: HashMap::new(),
+            attrs: IndexMap::new(),
             children: vec![Content::Text("hello".to_string())],
         };
 
@@ -1080,12 +1081,12 @@ mod tests {
     fn test_diff_text_change() {
         let old = Element {
             tag: "div".to_string(),
-            attrs: HashMap::new(),
+            attrs: IndexMap::new(),
             children: vec![Content::Text("old".to_string())],
         };
         let new = Element {
             tag: "div".to_string(),
-            attrs: HashMap::new(),
+            attrs: IndexMap::new(),
             children: vec![Content::Text("new".to_string())],
         };
 
@@ -1105,10 +1106,10 @@ mod tests {
 
     #[test]
     fn test_diff_attr_change() {
-        let mut old_attrs = HashMap::new();
+        let mut old_attrs = IndexMap::new();
         old_attrs.insert("class".to_string(), "foo".to_string());
 
-        let mut new_attrs = HashMap::new();
+        let mut new_attrs = IndexMap::new();
         new_attrs.insert("class".to_string(), "bar".to_string());
 
         let old = Element {
@@ -1140,16 +1141,16 @@ mod tests {
         // Reproduce fuzzer failure: body with child -> body with no children
         let old = Element {
             tag: "body".to_string(),
-            attrs: HashMap::new(),
+            attrs: IndexMap::new(),
             children: vec![Content::Element(Element {
                 tag: "span".to_string(),
-                attrs: HashMap::new(),
+                attrs: IndexMap::new(),
                 children: vec![],
             })],
         };
         let new = Element {
             tag: "body".to_string(),
-            attrs: HashMap::new(),
+            attrs: IndexMap::new(),
             children: vec![],
         };
 
@@ -1170,21 +1171,21 @@ mod tests {
         // Fuzzer found: <body><strong>old_text</strong></body> -> <body>new_text<strong>updated</strong></body>
         let old = Element {
             tag: "body".to_string(),
-            attrs: HashMap::new(),
+            attrs: IndexMap::new(),
             children: vec![Content::Element(Element {
                 tag: "strong".to_string(),
-                attrs: HashMap::new(),
+                attrs: IndexMap::new(),
                 children: vec![Content::Text("old".to_string())],
             })],
         };
         let new = Element {
             tag: "body".to_string(),
-            attrs: HashMap::new(),
+            attrs: IndexMap::new(),
             children: vec![
                 Content::Text("new_text".to_string()),
                 Content::Element(Element {
                     tag: "strong".to_string(),
-                    attrs: HashMap::new(),
+                    attrs: IndexMap::new(),
                     children: vec![Content::Text("updated".to_string())],
                 }),
             ],
@@ -1208,33 +1209,33 @@ mod tests {
         // New: text3<strong>text4</strong>
         let old = Element {
             tag: "body".to_string(),
-            attrs: HashMap::new(),
+            attrs: IndexMap::new(),
             children: vec![
                 Content::Element(Element {
                     tag: "strong".to_string(),
-                    attrs: HashMap::new(),
+                    attrs: IndexMap::new(),
                     children: vec![Content::Text("text1".to_string())],
                 }),
                 Content::Element(Element {
                     tag: "strong".to_string(),
-                    attrs: HashMap::new(),
+                    attrs: IndexMap::new(),
                     children: vec![Content::Text("text2".to_string())],
                 }),
                 Content::Element(Element {
                     tag: "img".to_string(),
-                    attrs: HashMap::new(),
+                    attrs: IndexMap::new(),
                     children: vec![],
                 }),
             ],
         };
         let new = Element {
             tag: "body".to_string(),
-            attrs: HashMap::new(),
+            attrs: IndexMap::new(),
             children: vec![
                 Content::Text("text3".to_string()),
                 Content::Element(Element {
                     tag: "strong".to_string(),
-                    attrs: HashMap::new(),
+                    attrs: IndexMap::new(),
                     children: vec![Content::Text("text4".to_string())],
                 }),
             ],

@@ -4,6 +4,7 @@
 
 use super::{InsertContent, NodePath, NodeRef, Patch, PropChange};
 use crate::debug;
+use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -13,9 +14,9 @@ pub struct Element {
     /// Tag name
     #[facet(tag)]
     pub tag: String,
-    /// Attributes as key-value pairs
+    /// Attributes as key-value pairs (preserves insertion order)
     #[facet(flatten)]
-    pub attrs: HashMap<String, String>,
+    pub attrs: IndexMap<String, String>,
     /// Child nodes
     #[facet(flatten)]
     pub children: Vec<Content>,
@@ -50,7 +51,7 @@ impl Element {
     }
 
     /// Get mutable reference to attrs at a path.
-    pub fn attrs_mut(&mut self, path: &[usize]) -> Result<&mut HashMap<String, String>, String> {
+    pub fn attrs_mut(&mut self, path: &[usize]) -> Result<&mut IndexMap<String, String>, String> {
         let mut current = self;
         for &idx in path {
             let child = current
@@ -376,7 +377,7 @@ fn apply_patch(
             let attrs = root
                 .attrs_mut(&path.0)
                 .map_err(|e| format!("RemoveAttribute: {e}"))?;
-            attrs.remove(name);
+            attrs.shift_remove(name);
         }
         Patch::Move {
             from,
@@ -657,7 +658,7 @@ fn apply_update_props(
                     if let Some(value) = &change.value {
                         elem.attrs.insert(change.name.clone(), value.clone());
                     } else {
-                        elem.attrs.remove(&change.name);
+                        elem.attrs.shift_remove(&change.name);
                     }
                 }
                 Content::Text(_) => {

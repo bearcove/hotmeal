@@ -8,6 +8,7 @@ use crate::untyped_dom::{Document, Element, Namespace, Node};
 use html5ever::tendril::TendrilSink;
 use html5ever::tree_builder::{ElemName, ElementFlags, NodeOrText, QuirksMode, TreeSink};
 use html5ever::{Attribute, LocalName, QualName, namespace_url, ns};
+use indexmap::IndexMap;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -160,7 +161,7 @@ impl HtmlSink {
         // Fallback: empty body
         DiffElement {
             tag: "body".to_string(),
-            attrs: HashMap::new(),
+            attrs: IndexMap::new(),
             children: vec![],
         }
     }
@@ -177,7 +178,7 @@ impl HtmlSink {
         }) = nodes.get(&handle)
         {
             // Use first-wins semantics for duplicate attributes (HTML parsing behavior)
-            let mut attr_map = HashMap::new();
+            let mut attr_map = IndexMap::new();
             for (k, v) in attrs {
                 attr_map.entry(k.clone()).or_insert_with(|| v.clone());
             }
@@ -192,7 +193,7 @@ impl HtmlSink {
         } else {
             DiffElement {
                 tag: "".to_string(),
-                attrs: HashMap::new(),
+                attrs: IndexMap::new(),
                 children: vec![],
             }
         }
@@ -275,7 +276,7 @@ impl HtmlSink {
             let tag = name.local.to_string();
 
             // Use first-wins semantics for duplicate attributes (HTML parsing behavior)
-            let mut attr_map = HashMap::new();
+            let mut attr_map = IndexMap::new();
             for (k, v) in attrs {
                 attr_map.entry(k.clone()).or_insert_with(|| v.clone());
             }

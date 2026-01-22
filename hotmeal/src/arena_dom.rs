@@ -10,6 +10,7 @@ use cinereus::indextree::{Arena, NodeId};
 use html5ever::tree_builder::{ElemName, ElementFlags, NodeOrText, QuirksMode, TreeSink};
 use html5ever::{Attribute, LocalName, QualName, parse_document};
 use html5ever::{local_name, namespace_url, ns};
+use indexmap::IndexMap;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -211,7 +212,7 @@ impl Document {
                 let node_id = self.navigate_path(&path.0)?;
                 let node_data = self.arena[node_id].get_mut();
                 if let NodeKind::Element(elem) = &mut node_data.kind {
-                    elem.attrs.remove(name);
+                    elem.attrs.shift_remove(name);
                 } else {
                     return Err("RemoveAttribute: node is not an element".to_string());
                 }
@@ -257,7 +258,7 @@ impl Document {
                             elem.attrs
                                 .insert(change.name.clone(), StrTendril::from(new_value.as_str()));
                         } else {
-                            elem.attrs.remove(&change.name);
+                            elem.attrs.shift_remove(&change.name);
                         }
                     }
                 }
@@ -563,7 +564,8 @@ pub struct ElementData {
     pub tag: StrTendril,
 
     /// Attributes - keys are String (to avoid clippy mutable_key_type), values are StrTendril
-    pub attrs: HashMap<String, StrTendril>,
+    /// IndexMap preserves insertion order for consistent serialization
+    pub attrs: IndexMap<String, StrTendril>,
 }
 
 /// XML namespace
@@ -726,7 +728,8 @@ impl TreeSink for ArenaSink {
         let ns = Namespace::from_url(name.ns.as_ref());
 
         // Convert attributes - keys are String, values are StrTendril
-        let attr_map: HashMap<_, _> = attrs
+        // IndexMap preserves insertion order from HTML
+        let attr_map: IndexMap<_, _> = attrs
             .into_iter()
             .map(|attr| {
                 let key = attr.name.local.to_string();
