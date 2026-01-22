@@ -23,7 +23,7 @@ mod apply;
 mod tree;
 
 pub use apply::{Content, Element, apply_patches, parse_html};
-pub use tree::diff_elements;
+pub use tree::{diff_arena_documents, diff_elements};
 
 // Re-export patch types
 pub use apply::Content as ApplyContent;

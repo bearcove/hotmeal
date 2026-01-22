@@ -17,6 +17,7 @@ use std::hash::{Hash, Hasher};
 
 use super::apply::{Content, Element};
 use super::{InsertContent, NodePath, NodeRef, Patch, PropChange};
+use crate::arena_dom;
 
 /// Node kind in the HTML tree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -139,6 +140,100 @@ pub fn build_tree(element: &Element) -> Tree<HtmlTreeTypes> {
     recompute_hashes(&mut tree);
 
     tree
+}
+
+/// Build a cinereus tree from an arena_dom::Document (body content only).
+pub fn build_tree_from_arena(doc: &arena_dom::Document) -> Tree<HtmlTreeTypes> {
+    // Find body element
+    let body_id = doc.body().expect("document must have body");
+    let body_node = doc.get(body_id);
+
+    // Create root as body element
+    let body_tag = if let arena_dom::NodeKind::Element(elem) = &body_node.kind {
+        elem.tag.as_ref()
+    } else {
+        panic!("body must be an element");
+    };
+
+    let root_data = NodeData {
+        hash: NodeHash(0),
+        kind: HtmlNodeKind::Element(body_tag.to_string()),
+        label: Some(NodePath(vec![])),
+        properties: HtmlProps {
+            attrs: HashMap::new(),
+            text: None,
+        },
+    };
+
+    let mut tree = Tree::new(root_data);
+    let tree_root = tree.root;
+
+    // Add children from body
+    add_arena_children(&mut tree, tree_root, doc, body_id, NodePath(vec![]));
+
+    // Recompute hashes bottom-up
+    recompute_hashes(&mut tree);
+
+    tree
+}
+
+fn add_arena_children(
+    tree: &mut Tree<HtmlTreeTypes>,
+    parent: indextree::NodeId,
+    doc: &arena_dom::Document,
+    arena_parent: indextree::NodeId,
+    parent_path: NodePath,
+) {
+    let children: Vec<_> = arena_parent.children(&doc.arena).collect();
+
+    for (i, child_id) in children.into_iter().enumerate() {
+        let mut child_path = parent_path.0.clone();
+        child_path.push(i);
+        let child_path = NodePath(child_path);
+
+        let child_node = doc.get(child_id);
+        match &child_node.kind {
+            arena_dom::NodeKind::Element(elem) => {
+                let kind = HtmlNodeKind::Element(elem.tag.as_ref().to_string());
+                let props = HtmlProps {
+                    attrs: elem
+                        .attrs
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.as_ref().to_string()))
+                        .collect(),
+                    text: None,
+                };
+                let data = NodeData {
+                    hash: NodeHash(0),
+                    kind,
+                    label: Some(child_path.clone()),
+                    properties: props,
+                };
+                let node_id = tree.add_child(parent, data);
+                add_arena_children(tree, node_id, doc, child_id, child_path);
+            }
+            arena_dom::NodeKind::Text(text) => {
+                let kind = HtmlNodeKind::Text;
+                let props = HtmlProps {
+                    attrs: HashMap::new(),
+                    text: Some(text.as_ref().to_string()),
+                };
+                let data = NodeData {
+                    hash: NodeHash(0),
+                    kind,
+                    label: Some(child_path),
+                    properties: props,
+                };
+                tree.add_child(parent, data);
+            }
+            arena_dom::NodeKind::Comment(_) => {
+                // Skip comments for diffing
+            }
+            arena_dom::NodeKind::Document => {
+                // Skip document nodes
+            }
+        }
+    }
 }
 
 fn add_children(
@@ -283,6 +378,62 @@ pub fn diff_elements(old: &Element, new: &Element) -> Result<Vec<Patch>, String>
     );
 
     // Convert cinereus ops to patches using shadow tree approach
+    convert_ops_with_shadow(edit_ops, &tree_a, &tree_b, &matching)
+}
+
+/// Compute diff between two arena_dom::Documents and return patches.
+pub fn diff_arena_documents(
+    old: &arena_dom::Document,
+    new: &arena_dom::Document,
+) -> Result<Vec<Patch>, String> {
+    let tree_a = build_tree_from_arena(old);
+    let tree_b = build_tree_from_arena(new);
+
+    #[cfg(test)]
+    {
+        trace!(
+            "tree_a: root hash={:?}, kind={:?}",
+            tree_a.get(tree_a.root).hash,
+            tree_a.get(tree_a.root).kind
+        );
+        trace!(
+            "tree_b: root hash={:?}, kind={:?}",
+            tree_b.get(tree_b.root).hash,
+            tree_b.get(tree_b.root).kind
+        );
+    }
+
+    let config = MatchingConfig {
+        min_height: 0,
+        ..MatchingConfig::default()
+    };
+
+    let mut matching = cinereus::compute_matching(&tree_a, &tree_b, &config);
+
+    // Force root match if same tag
+    let root_a = tree_a.get(tree_a.root);
+    let root_b = tree_b.get(tree_b.root);
+    if root_a.kind == root_b.kind && !matching.contains_a(tree_a.root) {
+        matching.add(tree_a.root, tree_b.root);
+    }
+
+    let edit_ops = cinereus::generate_edit_script(&tree_a, &tree_b, &matching);
+
+    #[cfg(test)]
+    {
+        debug!("matching pairs: {}", matching.len());
+        for (a, b) in matching.pairs() {
+            trace!("  matched: {:?} <-> {:?}", a, b);
+        }
+        trace!("edit_ops: {:?}", edit_ops);
+    }
+
+    debug!(
+        ops_count = edit_ops.len(),
+        matched_pairs = matching.len(),
+        "arena_dom cinereus diff complete"
+    );
+
     convert_ops_with_shadow(edit_ops, &tree_a, &tree_b, &matching)
 }
 
@@ -1259,5 +1410,49 @@ mod tests {
         debug!("Result: {}", result);
         debug!("Expected: {}", expected);
         assert_eq!(result, expected, "HTML output should match");
+    }
+
+    #[test]
+    fn test_arena_dom_diff() {
+        // Test diffing with arena_dom documents
+        let old_html = "<html><body><div>Old content</div></body></html>";
+        let new_html = "<html><body><div>New content</div></body></html>";
+
+        let old_doc = arena_dom::parse(old_html);
+        let new_doc = arena_dom::parse(new_html);
+
+        let patches = diff_arena_documents(&old_doc, &new_doc).expect("diff failed");
+        debug!("Patches: {:#?}", patches);
+
+        // Should have an UpdateProps patch with _text change
+        assert_eq!(patches.len(), 1);
+        match &patches[0] {
+            Patch::UpdateProps { path, changes } => {
+                assert_eq!(path.0, vec![0, 0]); // text node path
+                assert_eq!(changes.len(), 1);
+                assert_eq!(changes[0].name, "_text");
+                assert_eq!(changes[0].value, Some("New content".to_string()));
+            }
+            _ => panic!("Expected UpdateProps patch, got {:?}", patches[0]),
+        }
+    }
+
+    #[test]
+    fn test_arena_dom_diff_add_element() {
+        let old_html = "<html><body><div>Content</div></body></html>";
+        let new_html = "<html><body><div>Content</div><p>New paragraph</p></body></html>";
+
+        let old_doc = arena_dom::parse(old_html);
+        let new_doc = arena_dom::parse(new_html);
+
+        let patches = diff_arena_documents(&old_doc, &new_doc).expect("diff failed");
+        debug!("Patches: {:#?}", patches);
+
+        // Should have an InsertElement patch
+        assert!(!patches.is_empty());
+        let has_insert = patches
+            .iter()
+            .any(|p| matches!(p, Patch::InsertElement { .. }));
+        assert!(has_insert, "Should have InsertElement patch");
     }
 }
