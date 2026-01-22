@@ -267,10 +267,6 @@ pub fn diff_elements(old: &Element, new: &Element) -> Result<Vec<Patch>, String>
 
     // Generate edit script with the matching (including forced root match)
     let edit_ops = cinereus::generate_edit_script(&tree_a, &tree_b, &matching);
-    // Disable simplification for now - it creates semantic mismatches where cinereus
-    // expects positions to be empty but we've included content from simplified Inserts
-    // let edit_ops = cinereus::simplify_edit_script(edit_ops, &tree_a, &tree_b);
-
     #[cfg(test)]
     {
         debug!("matching pairs: {}", matching.len());
