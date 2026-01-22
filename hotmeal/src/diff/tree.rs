@@ -5,7 +5,7 @@
 
 use cinereus::{
     EditOp, Matching, MatchingConfig, NodeData, NodeHash, Properties, PropertyChange, Tree,
-    TreeTypes, diff_trees_with_matching,
+    TreeTypes,
     indextree::{self, NodeId},
 };
 use rapidhash::RapidHasher;
@@ -248,7 +248,23 @@ pub fn diff_elements(old: &Element, new: &Element) -> Result<Vec<Patch>, String>
         min_height: 0, // Include all nodes including leaves in top-down matching
         ..MatchingConfig::default()
     };
-    let (edit_ops, matching) = diff_trees_with_matching(&tree_a, &tree_b, &config);
+
+    // Compute initial matching
+    let mut matching = cinereus::compute_matching(&tree_a, &tree_b, &config);
+
+    // IMPORTANT: For HTML diffing, always match the roots if they have the same tag.
+    // Without this, when roots have different child counts (e.g., body with 1 child
+    // vs body with 0 children), they won't match due to different hashes, causing
+    // cinereus to generate a Delete for the entire tree_a root, which is invalid.
+    let root_a = tree_a.get(tree_a.root);
+    let root_b = tree_b.get(tree_b.root);
+    if root_a.kind == root_b.kind && !matching.contains_a(tree_a.root) {
+        matching.add(tree_a.root, tree_b.root);
+    }
+
+    // Generate edit script with the matching (including forced root match)
+    let edit_ops = cinereus::generate_edit_script(&tree_a, &tree_b, &matching);
+    let edit_ops = cinereus::simplify_edit_script(edit_ops, &tree_a, &tree_b);
 
     #[cfg(test)]
     {
@@ -748,5 +764,35 @@ mod tests {
             "Expected attr update patch, got: {:?}",
             patches
         );
+    }
+
+    #[test]
+    fn test_diff_remove_all_children() {
+        // Reproduce fuzzer failure: body with child -> body with no children
+        let old = Element {
+            tag: "body".to_string(),
+            attrs: HashMap::new(),
+            children: vec![Content::Element(Element {
+                tag: "span".to_string(),
+                attrs: HashMap::new(),
+                children: vec![],
+            })],
+        };
+        let new = Element {
+            tag: "body".to_string(),
+            attrs: HashMap::new(),
+            children: vec![],
+        };
+
+        let patches = diff_elements(&old, &new).unwrap();
+        eprintln!("Patches: {:#?}", patches);
+
+        // Should be able to apply the patches
+        let mut tree = old.clone();
+        super::super::apply::apply_patches(&mut tree, &patches).expect("apply should succeed");
+
+        // Result HTML should match new HTML (Chawathe semantics use empty text placeholders,
+        // so we compare serialized output rather than tree structure)
+        assert_eq!(tree.to_html(), new.to_html(), "HTML output should match");
     }
 }
