@@ -99,7 +99,13 @@ pub fn apply_patches(patches: &[Patch]) -> Result<usize, JsValue> {
 
     for (i, patch) in patches.iter().enumerate() {
         log(&format!("[hotmeal-wasm] patch {}: {:?}", i, patch));
-        apply_patch(&document, patch, &mut slots)?;
+        apply_patch(&document, patch, &mut slots).map_err(|e| {
+            JsValue::from_str(&format!(
+                "patch {}: {}",
+                i,
+                e.as_string().unwrap_or_default()
+            ))
+        })?;
     }
 
     Ok(count)

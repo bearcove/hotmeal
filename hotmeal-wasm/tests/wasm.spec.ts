@@ -213,8 +213,8 @@ test.describe("hotmeal fuzzing", () => {
   });
 
   // Run fuzzing with different seeds for reproducibility
-  const NUM_SEEDS = 10;
-  const MUTATIONS_PER_TEST = 5;
+  const NUM_SEEDS = 50;
+  const MUTATIONS_PER_TEST = 10;
 
   for (let seed = 0; seed < NUM_SEEDS; seed++) {
     test(`fuzz seed ${seed}`, async ({ page }) => {

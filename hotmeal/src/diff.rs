@@ -1591,4 +1591,41 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_fuzz_seed_27_template_4() {
+        use crate::diff_html;
+        use crate::dom;
+
+        let old_html = r##"<div>
+    <h3>Features</h3>
+    <ul>
+      <li>Feature one with <code>code</code></li>
+      <li>Feature two with <strong>emphasis</strong></li>
+      <li>Feature three</li>
+    </ul>
+  </div>"##;
+
+        let new_html = r##"<div title="primary">
+    <h3>Features</h3>
+    <ul>
+      <li>Feature one with <code>item</code></li>
+
+
+    </ul>
+  </div>"##;
+
+        let patches = diff_html(old_html, new_html).expect("diff should work");
+        debug!("Patches: {:#?}", patches);
+
+        for (i, patch) in patches.iter().enumerate() {
+            debug!("Patch {}: {:?}", i, patch);
+        }
+
+        // Apply all patches at once
+        let mut doc = dom::parse(&format!("<html><body>{}</body></html>", old_html));
+        if let Err(e) = doc.apply_patches(patches.clone()) {
+            panic!("Patches failed: {:?}", e);
+        }
+    }
 }
