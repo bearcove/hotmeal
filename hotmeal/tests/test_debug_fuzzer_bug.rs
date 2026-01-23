@@ -1,7 +1,8 @@
 //! Debug the specific fuzzer bug
 
 use facet_testhelpers::test;
-use hotmeal::{NodePath, NodeRef, Patch, Stem};
+use hotmeal::{NodePath, NodeRef, Patch};
+use html5ever::LocalName;
 
 #[test]
 fn test_minimal_repro() {
@@ -11,7 +12,7 @@ fn test_minimal_repro() {
     // Try to insert at position 1 when there's only 1 child
     let patches = vec![Patch::InsertElement {
         at: NodeRef::Path(NodePath(vec![1])),
-        tag: Stem::from("p"),
+        tag: LocalName::from("p"),
         attrs: vec![],
         children: vec![],
         detach_to_slot: None,

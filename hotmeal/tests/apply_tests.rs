@@ -1,7 +1,8 @@
 //! Tests for patch application.
 
 use facet_testhelpers::test;
-use hotmeal::{InsertContent, NodeKind, NodePath, NodeRef, Patch, Stem, parse};
+use hotmeal::{AttrPair, InsertContent, NodeKind, NodePath, NodeRef, Patch, Stem, parse};
+use html5ever::{LocalName, QualName, local_name, ns};
 
 #[test]
 fn test_parse_and_serialize_roundtrip() {
@@ -31,7 +32,7 @@ fn test_apply_set_attribute() {
     let mut node = parse("<html><body><div>Content</div></body></html>");
     node.apply_patches(vec![Patch::SetAttribute {
         path: NodePath(vec![0]),
-        name: Stem::from("class"),
+        name: QualName::new(None, ns!(), local_name!("class")),
         value: Stem::from("highlight"),
     }])
     .unwrap();
@@ -59,7 +60,7 @@ fn test_apply_insert_element() {
     let mut node = parse("<html><body><p>First</p></body></html>");
     node.apply_patches(vec![Patch::InsertElement {
         at: NodeRef::Path(NodePath(vec![0])),
-        tag: Stem::from("p"),
+        tag: LocalName::from("p"),
         attrs: vec![],
         children: vec![],
         detach_to_slot: Some(0),
@@ -76,7 +77,7 @@ fn test_apply_insert_element_no_displacement() {
     let mut node = parse("<html><body><p>First</p></body></html>");
     node.apply_patches(vec![Patch::InsertElement {
         at: NodeRef::Path(NodePath(vec![1])),
-        tag: Stem::from("p"),
+        tag: LocalName::from("p"),
         attrs: vec![],
         children: vec![],
         detach_to_slot: None,
@@ -93,7 +94,7 @@ fn test_apply_insert_element_with_children() {
     let mut node = parse("<html><body><p>First</p></body></html>");
     node.apply_patches(vec![Patch::InsertElement {
         at: NodeRef::Path(NodePath(vec![1])),
-        tag: Stem::from("p"),
+        tag: LocalName::from("p"),
         attrs: vec![],
         children: vec![InsertContent::Text(Stem::from("Second"))],
         detach_to_slot: None,
@@ -110,8 +111,11 @@ fn test_apply_insert_element_with_attrs() {
     let mut node = parse("<html><body><p>First</p></body></html>");
     node.apply_patches(vec![Patch::InsertElement {
         at: NodeRef::Path(NodePath(vec![1])),
-        tag: Stem::from("p"),
-        attrs: vec![(Stem::from("class"), Stem::from("highlight"))],
+        tag: LocalName::from("p"),
+        attrs: vec![AttrPair {
+            name: QualName::new(None, ns!(), local_name!("class")),
+            value: Stem::from("highlight"),
+        }],
         children: vec![InsertContent::Text(Stem::from("Second"))],
         detach_to_slot: None,
     }])

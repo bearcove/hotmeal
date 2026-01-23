@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use tendril::{StrTendril, TendrilSink};
 
-use crate::diff::{DiffError, InsertContent, NodeRef, Patch};
+use crate::diff::{DiffError, InsertContent, NodeRef, Patch, PropKey};
 use crate::{Stem, debug};
 
 /// Document = Arena (strings are StrTendrils with refcounted sharing)
@@ -39,7 +39,7 @@ impl Document {
         // Create html element
         let html = arena.new_node(NodeData {
             kind: NodeKind::Element(ElementData {
-                tag: Stem::from("html"),
+                tag: LocalName::from("html"),
                 attrs: Vec::new(),
             }),
             ns: Namespace::Html,
@@ -48,7 +48,7 @@ impl Document {
         // Create head element
         let head = arena.new_node(NodeData {
             kind: NodeKind::Element(ElementData {
-                tag: Stem::from("head"),
+                tag: LocalName::from("head"),
                 attrs: Vec::new(),
             }),
             ns: Namespace::Html,
@@ -58,7 +58,7 @@ impl Document {
         // Create body element
         let body = arena.new_node(NodeData {
             kind: NodeKind::Element(ElementData {
-                tag: Stem::from("body"),
+                tag: LocalName::from("body"),
                 attrs: Vec::new(),
             }),
             ns: Namespace::Html,
@@ -112,7 +112,7 @@ impl Document {
     // ==================== DOM Manipulation API ====================
 
     /// Create an element node (not yet attached to the tree)
-    pub fn create_element(&mut self, tag: impl Into<Stem>) -> NodeId {
+    pub fn create_element(&mut self, tag: impl Into<LocalName>) -> NodeId {
         self.arena.new_node(NodeData {
             kind: NodeKind::Element(ElementData {
                 tag: tag.into(),
@@ -159,16 +159,22 @@ impl Document {
     }
 
     /// Set an attribute on an element
-    pub fn set_attr(&mut self, element: NodeId, name: impl Into<Stem>, value: impl Into<Stem>) {
+    pub fn set_attr(&mut self, element: NodeId, name: QualName, value: impl Into<Stem>) {
         if let NodeKind::Element(elem) = &mut self.arena[element].get_mut().kind {
-            elem.attrs.insert(name.into(), value.into());
+            let value = value.into();
+            // Find existing attribute and update, or append new one
+            if let Some((_, existing_value)) = elem.attrs.iter_mut().find(|(k, _)| k == &name) {
+                *existing_value = value;
+            } else {
+                elem.attrs.push((name, value));
+            }
         }
     }
 
     /// Remove an attribute from an element
-    pub fn remove_attr(&mut self, element: NodeId, name: &Stem) {
+    pub fn remove_attr(&mut self, element: NodeId, name: &QualName) {
         if let NodeKind::Element(elem) = &mut self.arena[element].get_mut().kind {
-            elem.attrs.shift_remove(name);
+            elem.attrs.retain(|(k, _)| k != name);
         }
     }
 
@@ -299,7 +305,10 @@ impl Document {
                 // Create new element node
                 let elem_data = ElementData {
                     tag: tag.clone(),
-                    attrs: attrs.iter().cloned().collect(),
+                    attrs: attrs
+                        .iter()
+                        .map(|a| (a.name.clone(), a.value.clone()))
+                        .collect(),
                 };
                 let new_node = self.arena.new_node(NodeData {
                     kind: NodeKind::Element(elem_data),
@@ -365,7 +374,14 @@ impl Document {
                 let node_id = self.navigate_path(&path.0)?;
                 let node_data = self.arena[node_id].get_mut();
                 if let NodeKind::Element(elem) = &mut node_data.kind {
-                    elem.attrs.insert(name, value);
+                    // Find existing attribute and update, or append new one
+                    if let Some((_, existing_value)) =
+                        elem.attrs.iter_mut().find(|(k, _)| k == &name)
+                    {
+                        *existing_value = value;
+                    } else {
+                        elem.attrs.push((name, value));
+                    }
                 } else {
                     return Err(DiffError::NotAnElement);
                 }
@@ -374,7 +390,7 @@ impl Document {
                 let node_id = self.navigate_path(&path.0)?;
                 let node_data = self.arena[node_id].get_mut();
                 if let NodeKind::Element(elem) = &mut node_data.kind {
-                    elem.attrs.shift_remove(&name);
+                    elem.attrs.retain(|(k, _)| k != &name);
                 } else {
                     return Err(DiffError::NotAnElement);
                 }
@@ -409,7 +425,8 @@ impl Document {
                 let node_data = self.arena[node_id].get_mut();
 
                 // Handle text node updates
-                if let Some(text_change) = changes.iter().find(|c| c.name.as_ref() == "_text") {
+                if let Some(text_change) = changes.iter().find(|c| matches!(c.name, PropKey::Text))
+                {
                     if let NodeKind::Text(t) = &mut node_data.kind {
                         if let Some(new_text) = &text_change.value {
                             *t = new_text.clone();
@@ -433,19 +450,23 @@ impl Document {
                     );
 
                     for change in changes {
-                        if change.name.as_ref() != "_text" {
+                        if let PropKey::Attr(ref qual_name) = change.name {
                             debug!(
                                 "UpdateProps: processing attr {} value={:?}",
                                 change.name, change.value
                             );
-                            let value = if let Some(new_value) = change.value {
+                            let value = if let Some(new_value) = &change.value {
                                 // Different value - use the new one
-                                new_value
+                                new_value.clone()
                             } else {
                                 // Same value - copy from old attrs
-                                old_attrs.get(&change.name).cloned().unwrap_or_default()
+                                old_attrs
+                                    .iter()
+                                    .find(|(k, _)| k == qual_name)
+                                    .map(|(_, v)| v.clone())
+                                    .unwrap_or_default()
                             };
-                            elem.attrs.insert(change.name, value);
+                            elem.attrs.push((qual_name.clone(), value));
                         }
                     }
                     debug!("UpdateProps: final attrs_count={}", elem.attrs.len());
@@ -607,7 +628,7 @@ impl Document {
             } => {
                 let elem_data = ElementData {
                     tag,
-                    attrs: attrs.into_iter().collect(),
+                    attrs: attrs.into_iter().map(|a| (a.name, a.value)).collect(),
                 };
                 let node = self.arena.new_node(NodeData {
                     kind: NodeKind::Element(elem_data),
@@ -676,7 +697,12 @@ impl Document {
         // Attributes
         for (name, value) in &elem.attrs {
             out.push(' ');
-            out.push_str(name);
+            // Serialize QualName with prefix if present
+            if let Some(ref prefix) = name.prefix {
+                out.push_str(&prefix.to_string());
+                out.push(':');
+            }
+            out.push_str(&name.local.to_string());
             out.push_str("=\"");
             // Escape attribute value
             for c in value.as_ref().chars() {
@@ -1023,8 +1049,10 @@ impl TreeSink for ArenaSink {
         let node = &mut arena[*target].get_mut();
         if let NodeKind::Element(elem) = &mut node.kind {
             for attr in attrs {
-                let key = Stem::from(attr.name.local.as_ref());
-                elem.attrs.entry(key).or_insert(attr.value);
+                // Only add if not already present
+                if !elem.attrs.iter().any(|(k, _)| k == &attr.name) {
+                    elem.attrs.push((attr.name, attr.value));
+                }
             }
         }
     }
@@ -1100,13 +1128,21 @@ mod tests {
         if let NodeKind::Element(elem) = &div_data.kind {
             assert_eq!(elem.tag.as_ref(), "div");
 
-            // Check attributes (keys are Stem)
+            // Check attributes (keys are QualName with empty namespace for regular HTML attrs)
+            let class_name = QualName::new(None, ns!(), local_name!("class"));
             assert_eq!(
-                elem.attrs.get(&Stem::from("class")).map(|v| v.as_ref()),
+                elem.attrs
+                    .iter()
+                    .find(|(k, _)| k == &class_name)
+                    .map(|(_, v)| v.as_ref()),
                 Some("container")
             );
+            let id_name = QualName::new(None, ns!(), local_name!("id"));
             assert_eq!(
-                elem.attrs.get(&Stem::from("id")).map(|v| v.as_ref()),
+                elem.attrs
+                    .iter()
+                    .find(|(k, _)| k == &id_name)
+                    .map(|(_, v)| v.as_ref()),
                 Some("main")
             );
         }

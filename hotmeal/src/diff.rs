@@ -92,6 +92,30 @@ impl From<AttrPair> for (QualName, Stem) {
     }
 }
 
+/// Property key - either text content or an attribute
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Facet)]
+#[repr(u8)]
+pub enum PropKey {
+    /// Text content
+    Text,
+    /// Attribute with qualified name
+    Attr(#[facet(opaque, proxy = QualNameProxy)] QualName),
+}
+
+impl std::fmt::Display for PropKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PropKey::Text => write!(f, "_text"),
+            PropKey::Attr(qual) => {
+                if let Some(ref prefix) = qual.prefix {
+                    write!(f, "{}:", prefix)?;
+                }
+                write!(f, "{}", qual.local)
+            }
+        }
+    }
+}
+
 /// Errors that can occur during diffing or patch application.
 #[derive(Facet, Debug)]
 #[facet(derive(Error))]
@@ -170,9 +194,8 @@ pub enum InsertContent {
 /// The vec position determines the final ordering.
 #[derive(Debug, Clone, PartialEq, Eq, facet::Facet)]
 pub struct PropChange {
-    /// The property name (QualName for attributes, special name for text like "_text")
-    #[facet(opaque, proxy = QualNameProxy)]
-    pub name: QualName,
+    /// The property key (Text or Attr(QualName))
+    pub name: PropKey,
     /// The value: None means "keep existing value", Some means "update to this value".
     /// Properties not in the list are implicitly removed.
     pub value: Option<Stem>,
@@ -283,18 +306,8 @@ pub struct HtmlProps {
     pub text: Option<Stem>,
 }
 
-// Special QualName for text content (not a real attribute)
-fn text_key() -> QualName {
-    use html5ever::Namespace;
-    QualName {
-        prefix: None,
-        ns: Namespace::from(""),
-        local: LocalName::from("_text"),
-    }
-}
-
 impl Properties for HtmlProps {
-    type Key = QualName;
+    type Key = PropKey;
     type Value = Stem;
 
     #[allow(clippy::mutable_key_type)]
@@ -328,7 +341,7 @@ impl Properties for HtmlProps {
         // Diff text content - always include if present in final state
         if let Some(text) = &other.text {
             result.push(PropertyInFinalState {
-                key: text_key(),
+                key: PropKey::Text,
                 value: if self.text.as_ref() == Some(text) {
                     PropValue::Same
                 } else {
@@ -341,7 +354,7 @@ impl Properties for HtmlProps {
         for (key, new_val) in &other.attrs {
             let old_val = self.attrs.iter().find(|(k, _)| k == key).map(|(_, v)| v);
             result.push(PropertyInFinalState {
-                key: key.clone(),
+                key: PropKey::Attr(key.clone()),
                 value: if old_val == Some(new_val) {
                     PropValue::Same
                 } else {
@@ -1153,13 +1166,16 @@ fn extract_content_from_tree_b(
     tree_b: &Tree<HtmlTreeTypes>,
     b_to_shadow: &HashMap<NodeId, NodeId>,
     nodes_with_insert_ops: &HashSet<NodeId>,
-) -> (Vec<(Stem, Stem)>, Vec<InsertContent>) {
+) -> (Vec<AttrPair>, Vec<InsertContent>) {
     let data = tree_b.get(node_b);
     let attrs: Vec<_> = data
         .properties
         .attrs
         .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .map(|(k, v)| AttrPair {
+            name: k.clone(),
+            value: v.clone(),
+        })
         .collect();
 
     // Get children
@@ -1232,7 +1248,7 @@ mod tests {
         // Should have an UpdateProps patch for the text change
         let has_text_update = patches.iter().any(|p| {
             matches!(p, Patch::UpdateProps { changes, .. }
-                if changes.iter().any(|c| c.name.as_ref() == "_text"))
+                if changes.iter().any(|c| matches!(c.name, PropKey::Text)))
         });
         assert!(
             has_text_update,
@@ -1252,7 +1268,7 @@ mod tests {
 
         let has_attr_update = patches.iter().any(|p| {
             matches!(p, Patch::UpdateProps { changes, .. }
-                if changes.iter().any(|c| c.name.as_ref() == "class"))
+                if changes.iter().any(|c| matches!(c.name, PropKey::Attr(ref q) if q.local.as_ref() == "class")))
         });
         assert!(
             has_attr_update,
@@ -1502,7 +1518,7 @@ mod tests {
             Patch::UpdateProps { path, changes } => {
                 assert_eq!(path.0, vec![0, 0]); // text node path
                 assert_eq!(changes.len(), 1);
-                assert_eq!(changes[0].name.as_ref(), "_text");
+                assert!(matches!(changes[0].name, PropKey::Text));
                 assert_eq!(changes[0].value, Some(Stem::from("New content")));
             }
             _ => panic!("Expected UpdateProps patch, got {:?}", patches[0]),
