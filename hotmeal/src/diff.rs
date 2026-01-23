@@ -542,11 +542,15 @@ impl DiffTree for DiffableDocument<'_> {
     }
 
     fn position(&self, id: NodeId) -> usize {
+        cinereus::tree::POSITION_CALLS.with(|c| c.set(c.get() + 1));
         if let Some(parent) = self.parent(id) {
-            parent
-                .children(&self.doc.arena)
-                .position(|c| c == id)
-                .unwrap_or(0)
+            for (pos, c) in parent.children(&self.doc.arena).enumerate() {
+                cinereus::tree::SIBLINGS_SCANNED.with(|s| s.set(s.get() + 1));
+                if c == id {
+                    return pos;
+                }
+            }
+            0
         } else {
             0
         }
@@ -1829,5 +1833,35 @@ mod tests {
         if let Err(e) = doc.apply_patches(patches.clone()) {
             panic!("Patches failed: {:?}", e);
         }
+    }
+
+    #[test]
+    fn measure_position_calls_xxl() {
+        use cinereus::{get_position_stats, reset_position_counters};
+
+        let xxl_html = include_str!("../tests/fixtures/xxl.html");
+        let modified = xxl_html.replacen("<div", "<div class=\"modified\"", 1);
+
+        // Reset counters
+        reset_position_counters();
+
+        // Do the diff
+        let old = dom::parse(xxl_html);
+        let new = dom::parse(&modified);
+        let _patches = diff(&old, &new).expect("diff failed");
+
+        // Get stats
+        let (calls, scanned) = get_position_stats();
+
+        println!("\n=== XXL document diff position() stats ===");
+        println!("  position() calls: {}", calls);
+        println!("  siblings scanned: {}", scanned);
+        if calls > 0 {
+            println!(
+                "  avg siblings per call: {:.2}",
+                scanned as f64 / calls as f64
+            );
+        }
+        println!("===========================================\n");
     }
 }
