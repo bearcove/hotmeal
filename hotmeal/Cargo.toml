@@ -37,6 +37,7 @@ tracing = ["dep:tracing"]
 cinereus = { workspace = true, features = ["tracing"] }
 tracing = { version = "0.1" }
 facet-testhelpers = { workspace = true }
+facet-json = { workspace = true }
 datatest-stable = { workspace = true }
 divan = "0.1"
 

@@ -44,9 +44,9 @@ impl TryFrom<&LocalName> for LocalNameProxy {
 /// TODO: This string conversion is inefficient - consider interning namespaces or using indices
 #[derive(Debug, Clone, PartialEq, Eq, Facet)]
 pub struct QualNameProxy {
-    prefix: Option<String>,
-    ns: String,
-    local: String,
+    pub prefix: Option<String>,
+    pub ns: String,
+    pub local: String,
 }
 
 impl TryFrom<QualNameProxy> for QualName {
@@ -1542,5 +1542,20 @@ mod tests {
             .iter()
             .any(|p| matches!(p, Patch::InsertElement { .. }));
         assert!(has_insert, "Should have InsertElement patch");
+    }
+
+    #[test]
+    fn test_patch_serialization() {
+        use crate::diff_html;
+
+        let old_html = r#"<html><body><div>Content</div></body></html>"#;
+        let new_html = r#"<html><body><div class="highlight">Content</div></body></html>"#;
+
+        let patches = diff_html(old_html, new_html).expect("diff should work");
+
+        let json = facet_json::to_string(&patches).expect("serialization should work");
+        let roundtrip: Vec<Patch> =
+            facet_json::from_str(&json).expect("deserialization should work");
+        assert_eq!(patches, roundtrip);
     }
 }
