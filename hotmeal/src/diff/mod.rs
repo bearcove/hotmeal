@@ -16,7 +16,7 @@
 //! let patches = diff_arena_documents(&old, &new).expect("diffing should succeed");
 //!
 //! // Apply patches to the old document
-//! old.apply_patches(&patches).expect("patches should apply");
+//! old.apply_patches(patches).expect("patches should apply");
 //!
 //! // Verify the result
 //! assert!(old.to_html().contains("World"));
@@ -27,6 +27,38 @@ mod tree;
 pub use tree::diff_arena_documents;
 
 use crate::Stem;
+use facet::Facet;
+use facet_error as error;
+
+/// Errors that can occur during diffing or patch application.
+#[derive(Facet, Debug)]
+#[facet(derive(Error))]
+#[repr(u8)]
+pub enum DiffError {
+    /// no body element found in document
+    NoBody,
+
+    /// path index {index} out of bounds
+    PathOutOfBounds { index: usize },
+
+    /// cannot get parent of empty path
+    EmptyPath,
+
+    /// slot {slot} not found
+    SlotNotFound { slot: u32 },
+
+    /// cannot insert at slot without relative path
+    SlotMissingRelativePath,
+
+    /// node is not a text node
+    NotATextNode,
+
+    /// node is not an element
+    NotAnElement,
+
+    /// node is not a comment
+    NotAComment,
+}
 
 /// A path to a node in the DOM tree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, facet::Facet)]
@@ -150,14 +182,14 @@ pub enum Patch {
 pub fn diff(
     old: &crate::arena_dom::Document,
     new: &crate::arena_dom::Document,
-) -> Result<Vec<Patch>, Stem> {
+) -> Result<Vec<Patch>, DiffError> {
     diff_arena_documents(old, new)
 }
 
-/// Diff two HTML Stems and return DOM patches.
+/// Diff two HTML strings and return DOM patches.
 ///
 /// Parses both HTML strings and diffs them.
-pub fn diff_html(old_html: &str, new_html: &str) -> Result<Vec<Patch>, String> {
+pub fn diff_html(old_html: &str, new_html: &str) -> Result<Vec<Patch>, DiffError> {
     let old_doc = crate::arena_dom::parse(old_html);
     let new_doc = crate::arena_dom::parse(new_html);
     diff_arena_documents(&old_doc, &new_doc)

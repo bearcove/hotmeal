@@ -19,6 +19,7 @@ repository = "https://github.com/bearcove/hotmeal"
 [workspace.dependencies]
 # Facet dependencies
 facet = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-error = { git = "https://github.com/facet-rs/facet", branch = "main" }
 facet-json = { git = "https://github.com/facet-rs/facet", branch = "main" }
 facet-testhelpers = { git = "https://github.com/facet-rs/facet", branch = "main" }
 

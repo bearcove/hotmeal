@@ -20,8 +20,7 @@ use rapidhash::RapidHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
-use super::{InsertContent, NodePath, NodeRef, Patch, PropChange};
-use crate::arena_dom;
+use super::{DiffError, InsertContent, NodePath, NodeRef, Patch, PropChange};
 
 /// Node kind in the HTML tree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -287,7 +286,7 @@ fn recompute_hashes(tree: &mut Tree<HtmlTreeTypes>) {
 }
 
 /// Compute diff between two arena_dom::Documents and return patches.
-pub fn diff_arena_documents(old: &Document, new: &Document) -> Result<Vec<Patch>, String> {
+pub fn diff_arena_documents(old: &Document, new: &Document) -> Result<Vec<Patch>, DiffError> {
     let tree_a = build_tree_from_arena(old);
     let tree_b = build_tree_from_arena(new);
 
@@ -665,7 +664,7 @@ fn convert_ops_with_shadow(
     tree_a: &Tree<HtmlTreeTypes>,
     tree_b: &Tree<HtmlTreeTypes>,
     matching: &Matching,
-) -> Result<Vec<Patch>, String> {
+) -> Result<Vec<Patch>, DiffError> {
     // Create shadow tree with encapsulated state
     let mut shadow = ShadowTree::new(tree_a.arena.clone(), tree_a.root);
 
@@ -775,8 +774,7 @@ fn convert_ops_with_shadow(
                             .properties
                             .text
                             .clone()
-                            .unwrap_or_default()
-                            .to_string();
+                            .unwrap_or_default();
                         result.push(Patch::InsertText {
                             at,
                             text,
@@ -789,8 +787,7 @@ fn convert_ops_with_shadow(
                             .properties
                             .text
                             .clone()
-                            .unwrap_or_default()
-                            .to_string();
+                            .unwrap_or_default();
                         result.push(Patch::InsertComment {
                             at,
                             text,
@@ -935,13 +932,13 @@ fn extract_content_from_tree_b(
     tree_b: &Tree<HtmlTreeTypes>,
     b_to_shadow: &HashMap<NodeId, NodeId>,
     nodes_with_insert_ops: &HashSet<NodeId>,
-) -> (Vec<(String, String)>, Vec<InsertContent>) {
+) -> (Vec<(Stem, Stem)>, Vec<InsertContent>) {
     let data = tree_b.get(node_b);
     let attrs: Vec<_> = data
         .properties
         .attrs
         .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
     // Get children
@@ -970,21 +967,11 @@ fn extract_content_from_tree_b(
                 });
             }
             HtmlNodeKind::Text => {
-                let text = child_data
-                    .properties
-                    .text
-                    .clone()
-                    .unwrap_or_default()
-                    .to_string();
+                let text = child_data.properties.text.clone().unwrap_or_default();
                 children.push(InsertContent::Text(text));
             }
             HtmlNodeKind::Comment => {
-                let text = child_data
-                    .properties
-                    .text
-                    .clone()
-                    .unwrap_or_default()
-                    .to_string();
+                let text = child_data.properties.text.clone().unwrap_or_default();
                 children.push(InsertContent::Comment(text));
             }
         }

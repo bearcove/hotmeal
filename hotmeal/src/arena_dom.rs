@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use tendril::{StrTendril, TendrilSink};
 
-use crate::diff::{InsertContent, NodeRef, Patch};
+use crate::diff::{DiffError, InsertContent, NodeRef, Patch};
 use crate::{Stem, debug};
 
 /// Document = Arena (strings are StrTendrils with refcounted sharing)
@@ -232,29 +232,29 @@ impl Document {
 
     /// Navigate to a node by path starting from body.
     /// Returns the NodeId at the given path.
-    fn navigate_path(&self, path: &[usize]) -> Result<NodeId, String> {
-        let mut current = self.body().ok_or("no body element")?;
+    fn navigate_path(&self, path: &[usize]) -> Result<NodeId, DiffError> {
+        let mut current = self.body().ok_or(DiffError::NoBody)?;
 
         for &idx in path {
             let mut children = current.children(&self.arena);
             current = children
                 .nth(idx)
-                .ok_or_else(|| format!("path index {idx} out of bounds"))?;
+                .ok_or(DiffError::PathOutOfBounds { index: idx })?;
         }
 
         Ok(current)
     }
 
     /// Get parent of a node by path. Returns (parent_id, child_index).
-    fn get_parent(&self, path: &[usize]) -> Result<(NodeId, usize), String> {
+    fn get_parent(&self, path: &[usize]) -> Result<(NodeId, usize), DiffError> {
         if path.is_empty() {
-            return Err("cannot get parent of empty path".to_string());
+            return Err(DiffError::EmptyPath);
         }
 
         let parent_path = &path[..path.len() - 1];
         let child_idx = path[path.len() - 1];
         let parent_id = if parent_path.is_empty() {
-            self.body().ok_or("no body element")?
+            self.body().ok_or(DiffError::NoBody)?
         } else {
             self.navigate_path(parent_path)?
         };
@@ -263,7 +263,7 @@ impl Document {
     }
 
     /// Apply patches to this document (modifying it in place).
-    pub fn apply_patches(&mut self, patches: Vec<Patch>) -> Result<(), Stem> {
+    pub fn apply_patches(&mut self, patches: Vec<Patch>) -> Result<(), DiffError> {
         // Slots hold NodeIds that were displaced during edits
         let mut slots: HashMap<u32, NodeId> = HashMap::new();
 
@@ -275,7 +275,11 @@ impl Document {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn apply_patch(&mut self, patch: Patch, slots: &mut HashMap<u32, NodeId>) -> Result<(), Stem> {
+    fn apply_patch(
+        &mut self,
+        patch: Patch,
+        slots: &mut HashMap<u32, NodeId>,
+    ) -> Result<(), DiffError> {
         debug!("Applying patch: {:#?}", patch);
         match patch {
             Patch::InsertElement {
@@ -347,7 +351,7 @@ impl Document {
                 if let NodeKind::Text(t) = &mut node_data.kind {
                     *t = text;
                 } else {
-                    return Err(Stem::from("SetText: node is not a text node"));
+                    return Err(DiffError::NotATextNode);
                 }
             }
             Patch::SetAttribute { path, name, value } => {
@@ -356,7 +360,7 @@ impl Document {
                 if let NodeKind::Element(elem) = &mut node_data.kind {
                     elem.attrs.insert(name, value);
                 } else {
-                    return Err(Stem::from("SetAttribute: node is not an element"));
+                    return Err(DiffError::NotAnElement);
                 }
             }
             Patch::RemoveAttribute { path, name } => {
@@ -365,7 +369,7 @@ impl Document {
                 if let NodeKind::Element(elem) = &mut node_data.kind {
                     elem.attrs.shift_remove(&name);
                 } else {
-                    return Err(Stem::from("RemoveAttribute: node is not an element"));
+                    return Err(DiffError::NotAnElement);
                 }
             }
             Patch::Move {
@@ -451,20 +455,20 @@ impl Document {
         &self,
         node_ref: &NodeRef,
         slots: &HashMap<u32, NodeId>,
-    ) -> Result<NodeId, String> {
+    ) -> Result<NodeId, DiffError> {
         match node_ref {
             NodeRef::Path(path) => self.navigate_path(&path.0),
             NodeRef::Slot(slot, rel_path) => {
                 let slot_node = slots
                     .get(slot)
-                    .ok_or_else(|| format!("slot {slot} not found"))?;
+                    .ok_or(DiffError::SlotNotFound { slot: *slot })?;
                 if let Some(path) = rel_path {
                     let mut current = *slot_node;
                     for &idx in &path.0 {
                         let mut children = current.children(&self.arena);
                         current = children
                             .nth(idx)
-                            .ok_or_else(|| format!("relative path index {idx} out of bounds"))?;
+                            .ok_or(DiffError::PathOutOfBounds { index: idx })?;
                     }
                     Ok(current)
                 } else {
@@ -480,7 +484,7 @@ impl Document {
         node_to_insert: NodeId,
         detach_to_slot: Option<u32>,
         slots: &mut HashMap<u32, NodeId>,
-    ) -> Result<(), String> {
+    ) -> Result<(), DiffError> {
         match at {
             NodeRef::Path(path) => {
                 let (parent_id, position) = self.get_parent(&path.0)?;
@@ -499,7 +503,7 @@ impl Document {
             NodeRef::Slot(slot, rel_path) => {
                 let slot_node = *slots
                     .get(slot)
-                    .ok_or_else(|| format!("slot {slot} not found"))?;
+                    .ok_or(DiffError::SlotNotFound { slot: *slot })?;
 
                 if let Some(path) = rel_path {
                     let parent_path = &path.0[..path.0.len() - 1];
@@ -515,7 +519,7 @@ impl Document {
                         let mut children = parent_id.children(&self.arena);
                         parent_id = children
                             .nth(idx)
-                            .ok_or_else(|| format!("relative path index {idx} out of bounds"))?;
+                            .ok_or(DiffError::PathOutOfBounds { index: idx })?;
                     }
 
                     debug!(
@@ -539,7 +543,7 @@ impl Document {
 
                     self.insert_at_position(parent_id, position, node_to_insert)?;
                 } else {
-                    return Err("cannot insert at slot without relative path".to_string());
+                    return Err(DiffError::SlotMissingRelativePath);
                 }
             }
         }
@@ -552,7 +556,7 @@ impl Document {
         parent_id: NodeId,
         position: usize,
         node_to_insert: NodeId,
-    ) -> Result<(), String> {
+    ) -> Result<(), DiffError> {
         let children: Vec<_> = parent_id.children(&self.arena).collect();
 
         debug!(
@@ -587,7 +591,7 @@ impl Document {
         Ok(())
     }
 
-    fn create_insert_content(&mut self, content: InsertContent) -> Result<NodeId, Stem> {
+    fn create_insert_content(&mut self, content: InsertContent) -> Result<NodeId, DiffError> {
         match content {
             InsertContent::Element {
                 tag,
