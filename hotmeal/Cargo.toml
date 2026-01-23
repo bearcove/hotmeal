@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "HTML toolkit with typed DOM, html5ever parsing, and serialization"
+description = "HTML toolkit with arena-based DOM, html5ever parsing, and serialization"
 keywords = ["html", "dom", "html5ever", "parsing", "facet"]
 categories = ["encoding", "parsing", "web-programming"]
 
