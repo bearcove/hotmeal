@@ -243,21 +243,6 @@ impl Document {
         output
     }
 
-    /// Navigate to a node by path starting from body (legacy, for NodePath fields).
-    /// Returns the NodeId at the given path.
-    fn navigate_path(&self, path: &[usize]) -> Result<NodeId, DiffError> {
-        let mut current = self.body().ok_or(DiffError::NoBody)?;
-
-        for &idx in path {
-            let mut children = current.children(&self.arena);
-            current = children
-                .nth(idx)
-                .ok_or(DiffError::PathOutOfBounds { index: idx })?;
-        }
-
-        Ok(current)
-    }
-
     /// Navigate to a node using the new unified path format.
     /// Path `[slot, a, b, c]` means: get slot root, then navigate a → b → c.
     fn navigate_slot_path(

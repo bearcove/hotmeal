@@ -142,14 +142,18 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
         }
 
         Patch::Remove { node } => {
-            let NodeRef(ref path) = node;
+            let NodeRef(path) = node;
             let slot = path.0[0];
             if slot == 0 {
                 // Main tree - replace with empty text node (no shifting - Chawathe semantics)
                 let rel_path = NodePath(path.0[1..].to_vec());
-                let target = find_node_in_body(doc, &rel_path)?;
+                let body: Node = doc
+                    .body()
+                    .ok_or_else(|| JsValue::from_str("no body"))?
+                    .into();
+                let target = navigate_within_node(&body, &rel_path)?;
                 if let Some(parent) = target.parent_node() {
-                    let empty_text = doc.create_text_node("");
+                    let empty_text: Node = doc.create_text_node("").into();
                     parent.replace_child(&empty_text, &target)?;
                 }
             } else {
@@ -182,45 +186,37 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
         } => {
             // Extract parent and position from NodeRef
             // Path format: [slot, ...rest] where first element is slot number
-            let NodeRef(ref path) = at;
+            let NodeRef(path) = at;
             if path.0.len() < 2 {
                 return Err(JsValue::from_str("InsertElement: path too short"));
             }
             let slot = path.0[0];
             let position = path.0[path.0.len() - 1];
 
-            let parent_el = if slot == 0 {
-                // Main tree (body)
-                let parent_path = NodePath(path.0[1..path.0.len() - 1].to_vec());
-                let parent_node = if parent_path.0.is_empty() {
-                    let body = doc.body().ok_or_else(|| JsValue::from_str("no body"))?;
-                    body.into()
-                } else {
-                    find_node_in_body(doc, &parent_path)?
-                };
-                parent_node
-                    .dyn_ref::<Element>()
-                    .ok_or_else(|| JsValue::from_str("parent is not an element"))?
-                    .clone()
+            // Get the slot root (body for slot 0, or stored slot node)
+            let slot_root: Node = if slot == 0 {
+                doc.body()
+                    .ok_or_else(|| JsValue::from_str("no body"))?
+                    .into()
             } else {
-                // Slot
-                let slot_root = slots
+                slots
                     .get(slot as u32)
                     .cloned()
-                    .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?;
-
-                let parent_path_in_slot = NodePath(path.0[1..path.0.len() - 1].to_vec());
-                let parent_node = if parent_path_in_slot.0.is_empty() {
-                    slot_root
-                } else {
-                    navigate_within_node(&slot_root, &parent_path_in_slot)?
-                };
-
-                parent_node
-                    .dyn_ref::<Element>()
-                    .ok_or_else(|| JsValue::from_str("slot parent is not an element"))?
-                    .clone()
+                    .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?
             };
+
+            // Navigate to parent (path minus first element [slot] and last element [position])
+            let parent_path = NodePath(path.0[1..path.0.len() - 1].to_vec());
+            let parent_node = if parent_path.0.is_empty() {
+                slot_root
+            } else {
+                navigate_within_node(&slot_root, &parent_path)?
+            };
+
+            let parent_el = parent_node
+                .dyn_ref::<Element>()
+                .ok_or_else(|| JsValue::from_str("parent is not an element"))?
+                .clone();
 
             // Create the new element
             let new_el = doc.create_element(tag)?;
@@ -260,45 +256,37 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
         } => {
             // Extract parent and position from NodeRef
             // Path format: [slot, ...rest] where first element is slot number
-            let NodeRef(ref path) = at;
+            let NodeRef(path) = at;
             if path.0.len() < 2 {
                 return Err(JsValue::from_str("InsertText: path too short"));
             }
             let slot = path.0[0];
             let position = path.0[path.0.len() - 1];
 
-            let parent_el = if slot == 0 {
-                // Main tree (body)
-                let parent_path = NodePath(path.0[1..path.0.len() - 1].to_vec());
-                let parent_node = if parent_path.0.is_empty() {
-                    let body = doc.body().ok_or_else(|| JsValue::from_str("no body"))?;
-                    body.into()
-                } else {
-                    find_node_in_body(doc, &parent_path)?
-                };
-                parent_node
-                    .dyn_ref::<Element>()
-                    .ok_or_else(|| JsValue::from_str("parent is not an element"))?
-                    .clone()
+            // Get the slot root (body for slot 0, or stored slot node)
+            let slot_root: Node = if slot == 0 {
+                doc.body()
+                    .ok_or_else(|| JsValue::from_str("no body"))?
+                    .into()
             } else {
-                // Slot
-                let slot_root = slots
+                slots
                     .get(slot as u32)
                     .cloned()
-                    .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?;
-
-                let parent_path_in_slot = NodePath(path.0[1..path.0.len() - 1].to_vec());
-                let parent_node = if parent_path_in_slot.0.is_empty() {
-                    slot_root
-                } else {
-                    navigate_within_node(&slot_root, &parent_path_in_slot)?
-                };
-
-                parent_node
-                    .dyn_ref::<Element>()
-                    .ok_or_else(|| JsValue::from_str("slot parent is not an element"))?
-                    .clone()
+                    .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?
             };
+
+            // Navigate to parent (path minus first element [slot] and last element [position])
+            let parent_path = NodePath(path.0[1..path.0.len() - 1].to_vec());
+            let parent_node = if parent_path.0.is_empty() {
+                slot_root
+            } else {
+                navigate_within_node(&slot_root, &parent_path)?
+            };
+
+            let parent_el = parent_node
+                .dyn_ref::<Element>()
+                .ok_or_else(|| JsValue::from_str("parent is not an element"))?
+                .clone();
 
             // Create text node
             let text_node = doc.create_text_node(text);
@@ -320,59 +308,38 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             detach_to_slot,
         } => {
             // Extract parent and position from NodeRef
-            let (parent_el, position) = match at {
-                NodeRef::Path(path) => {
-                    if path.0.is_empty() {
-                        return Err(JsValue::from_str("InsertComment: empty path"));
-                    }
-                    let parent_path = NodePath(path.0[..path.0.len() - 1].to_vec());
-                    let position = path.0[path.0.len() - 1];
-                    let parent_node = if parent_path.0.is_empty() {
-                        let body = doc.body().ok_or_else(|| JsValue::from_str("no body"))?;
-                        body.into()
-                    } else {
-                        find_node(doc, &parent_path, slots)?
-                    };
-                    let parent_el = parent_node
-                        .dyn_ref::<Element>()
-                        .ok_or_else(|| JsValue::from_str("parent is not an element"))?
-                        .clone();
-                    (parent_el, position)
-                }
-                NodeRef::Slot(slot, rel_path) => {
-                    let slot_root = slots
-                        .get(*slot)
-                        .cloned()
-                        .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?;
+            // Path format: [slot, ...rest] where first element is slot number
+            let NodeRef(path) = at;
+            if path.0.len() < 2 {
+                return Err(JsValue::from_str("InsertComment: path too short"));
+            }
+            let slot = path.0[0];
+            let position = path.0[path.0.len() - 1];
 
-                    let rel_path = rel_path.as_ref().ok_or_else(|| {
-                        JsValue::from_str("InsertComment: slot reference without relative path")
-                    })?;
-
-                    if rel_path.0.is_empty() {
-                        return Err(JsValue::from_str("InsertComment: empty relative path"));
-                    }
-
-                    let parent_path_in_slot = if rel_path.0.len() > 1 {
-                        Some(NodePath(rel_path.0[..rel_path.0.len() - 1].to_vec()))
-                    } else {
-                        None
-                    };
-                    let position = rel_path.0[rel_path.0.len() - 1];
-
-                    let parent_node = if let Some(p) = parent_path_in_slot {
-                        navigate_within_node(&slot_root, &p)?
-                    } else {
-                        slot_root
-                    };
-
-                    let parent_el = parent_node
-                        .dyn_ref::<Element>()
-                        .ok_or_else(|| JsValue::from_str("slot parent is not an element"))?
-                        .clone();
-                    (parent_el, position)
-                }
+            // Get the slot root (body for slot 0, or stored slot node)
+            let slot_root: Node = if slot == 0 {
+                doc.body()
+                    .ok_or_else(|| JsValue::from_str("no body"))?
+                    .into()
+            } else {
+                slots
+                    .get(slot as u32)
+                    .cloned()
+                    .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?
             };
+
+            // Navigate to parent (path minus first element [slot] and last element [position])
+            let parent_path = NodePath(path.0[1..path.0.len() - 1].to_vec());
+            let parent_node = if parent_path.0.is_empty() {
+                slot_root
+            } else {
+                navigate_within_node(&slot_root, &parent_path)?
+            };
+
+            let parent_el = parent_node
+                .dyn_ref::<Element>()
+                .ok_or_else(|| JsValue::from_str("parent is not an element"))?
+                .clone();
 
             // Create comment node
             let comment_node = doc.create_comment(text);
@@ -452,83 +419,40 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             to,
             detach_to_slot,
         } => {
-            // Get the node to move (from path or slot)
-            let node = match from {
-                NodeRef::Path(path) => {
-                    let node = find_node(doc, path, slots)?;
-                    // Replace with empty text node (no shifting - Chawathe semantics)
-                    if let Some(parent) = node.parent_node() {
-                        let empty_text = doc.create_text_node("");
-                        parent.replace_child(&empty_text, &node)?;
-                    }
-                    node
+            let from_path = &from.0;
+            let to_path = &to.0;
+
+            // Get the node to move
+            let node = if from_path.0.len() == 1 {
+                // Path of length 1 means [slot] - moving the entire slot root
+                let slot = from_path.0[0] as u32;
+                slots
+                    .take(slot)
+                    .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?
+            } else {
+                // Navigate to the node and detach with placeholder
+                let node = find_node(doc, from_path, slots)?;
+                if let Some(parent) = node.parent_node() {
+                    let empty_text = doc.create_text_node("");
+                    parent.replace_child(&empty_text, &node)?;
                 }
-                NodeRef::Slot(slot, rel_path) => {
-                    if let Some(path) = rel_path {
-                        // Moving a child within the slot - don't consume the slot
-                        let slot_root = slots
-                            .get(*slot)
-                            .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?;
-                        let node = navigate_within_node(slot_root, path)?;
-                        // Detach from parent with placeholder (Chawathe semantics)
-                        if let Some(parent) = node.parent_node() {
-                            let empty_text = doc.create_text_node("");
-                            parent.replace_child(&empty_text, &node)?;
-                        }
-                        node
-                    } else {
-                        // Moving the entire slot root - consume the slot
-                        slots
-                            .take(*slot)
-                            .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?
-                    }
-                }
+                node
             };
 
-            // Find the parent and position from the target
-            match to {
-                NodeRef::Path(path) => {
-                    if path.0.is_empty() {
-                        return Err(JsValue::from_str("Move: cannot move to root"));
-                    }
-                    let parent_path = NodePath(path.0[..path.0.len() - 1].to_vec());
-                    let target_idx = path.0[path.0.len() - 1];
-
-                    let parent_node = find_node(doc, &parent_path, slots)?;
-                    let parent_el = parent_node
-                        .dyn_ref::<Element>()
-                        .ok_or_else(|| JsValue::from_str("parent is not an element"))?;
-
-                    // Insert at the target position with Chawathe displacement
-                    insert_at_position(doc, parent_el, &node, target_idx, *detach_to_slot, slots)?;
-                }
-                NodeRef::Slot(slot, rel_path) => {
-                    // Moving into a slot - get the slot root and navigate
-                    let slot_root = slots.get(*slot).ok_or_else(|| {
-                        JsValue::from_str(&format!("target slot {} is empty", slot))
-                    })?;
-
-                    let (parent_el, target_idx) = if let Some(path) = rel_path {
-                        if path.0.is_empty() {
-                            return Err(JsValue::from_str("Move: cannot move to slot root"));
-                        }
-                        let parent_path = NodePath(path.0[..path.0.len() - 1].to_vec());
-                        let target_idx = path.0[path.0.len() - 1];
-                        let parent_node = navigate_within_node(slot_root, &parent_path)?;
-                        let parent_el = parent_node
-                            .dyn_ref::<Element>()
-                            .ok_or_else(|| JsValue::from_str("slot parent is not an element"))?
-                            .clone();
-                        (parent_el, target_idx)
-                    } else {
-                        return Err(JsValue::from_str(
-                            "Move: cannot move to slot root without relative path",
-                        ));
-                    };
-
-                    insert_at_position(doc, &parent_el, &node, target_idx, *detach_to_slot, slots)?;
-                }
+            // Get parent and position from target path
+            if to_path.0.len() < 2 {
+                return Err(JsValue::from_str("Move: target path too short"));
             }
+            let parent_path = NodePath(to_path.0[..to_path.0.len() - 1].to_vec());
+            let target_idx = to_path.0[to_path.0.len() - 1];
+
+            let parent_node = find_node(doc, &parent_path, slots)?;
+            let parent_el = parent_node
+                .dyn_ref::<Element>()
+                .ok_or_else(|| JsValue::from_str("Move: parent is not an element"))?;
+
+            // Insert at the target position with Chawathe displacement
+            insert_at_position(doc, parent_el, &node, target_idx, *detach_to_slot, slots)?;
         }
     }
 
@@ -628,14 +552,31 @@ fn navigate_within_node(root: &Node, path: &NodePath) -> Result<Node, JsValue> {
     Ok(current)
 }
 
-/// Find a node by DOM path.
-fn find_node(doc: &Document, path: &NodePath, _slots: &Slots) -> Result<Node, JsValue> {
-    let body = doc.body().ok_or_else(|| JsValue::from_str("no body"))?;
-    let mut current: Node = body.into();
+/// Find a node by slot-based path.
+/// Path format: [slot, child1, child2, ...] where slot 0 = body
+fn find_node(doc: &Document, path: &NodePath, slots: &Slots) -> Result<Node, JsValue> {
+    if path.0.is_empty() {
+        return Err(JsValue::from_str("empty path"));
+    }
 
-    trace!(?path, "find_node starting from body");
+    let slot = path.0[0] as u32;
+    trace!(?path, slot, "find_node");
 
-    for &idx in &path.0 {
+    // Get the slot root
+    let slot_root: Node = if slot == 0 {
+        doc.body()
+            .ok_or_else(|| JsValue::from_str("no body"))?
+            .into()
+    } else {
+        slots
+            .get(slot)
+            .ok_or_else(|| JsValue::from_str(&format!("slot {} not found", slot)))?
+            .clone()
+    };
+
+    // Navigate within the slot root
+    let mut current = slot_root;
+    for &idx in &path.0[1..] {
         let children = current.child_nodes();
         let num_children = children.length();
         trace!(idx, num_children, "navigating to child");

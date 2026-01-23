@@ -731,8 +731,8 @@ impl ShadowTree {
     #[allow(dead_code)]
     fn debug_print_tree(&self, _title: &str) {
         debug!("=== {} ===", _title);
-        for (slot_num, slot_node) in self.super_root.children(&self.arena).enumerate() {
-            debug!("Slot {}:", slot_num);
+        for (_slot_num, slot_node) in self.super_root.children(&self.arena).enumerate() {
+            debug!("Slot {}:", _slot_num);
             for content in slot_node.children(&self.arena) {
                 self.debug_print_node(content, 1);
             }
