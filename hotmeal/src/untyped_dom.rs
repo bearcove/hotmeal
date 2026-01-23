@@ -142,9 +142,9 @@ pub enum Node {
     Element(Element),
     /// A text node
     #[facet(text)]
-    Text(String),
+    Text(Stem),
     /// A comment node
-    Comment(String),
+    Comment(Stem),
 }
 
 impl Node {
@@ -188,10 +188,10 @@ impl Node {
     }
 
     /// Get text content of this node and all descendants.
-    pub fn text_content(&self) -> String {
+    pub fn text_content(&self) -> Stem {
         match self {
             Node::Text(t) => t.clone(),
-            Node::Comment(_) => String::new(),
+            Node::Comment(_) => Stem::new(),
             Node::Element(e) => e.text_content(),
         }
     }
@@ -216,9 +216,9 @@ pub struct Element {
 
 impl Element {
     /// Create a new element with the given tag name in the HTML namespace.
-    pub fn new(tag: impl Into<String>) -> Self {
+    pub fn new(tag: Stem) -> Self {
         Self {
-            tag: tag.into(),
+            tag,
             ns: Namespace::Html,
             attrs: IndexMap::new(),
             children: Vec::new(),
@@ -226,9 +226,9 @@ impl Element {
     }
 
     /// Create a new element with namespace.
-    pub fn with_namespace(tag: impl Into<String>, ns: Namespace) -> Self {
+    pub fn with_namespace(tag: Stem, ns: Namespace) -> Self {
         Self {
-            tag: tag.into(),
+            tag,
             ns,
             attrs: IndexMap::new(),
             children: Vec::new(),
@@ -237,16 +237,16 @@ impl Element {
 
     /// Get an attribute value.
     pub fn get_attr(&self, name: &str) -> Option<&str> {
-        self.attrs.get(name).map(|s| s.as_str())
+        self.attrs.get(&Stem::from(name)).map(|s| s.as_ref())
     }
 
     /// Set an attribute value.
-    pub fn set_attr(&mut self, name: impl Into<String>, value: impl Into<String>) {
-        self.attrs.insert(name.into(), value.into());
+    pub fn set_attr(&mut self, name: Stem, value: Stem) {
+        self.attrs.insert(name, value);
     }
 
     /// Remove an attribute.
-    pub fn remove_attr(&mut self, name: &str) -> Option<String> {
+    pub fn remove_attr(&mut self, name: &str) -> Option<Stem> {
         self.attrs.shift_remove(name)
     }
 
@@ -256,8 +256,8 @@ impl Element {
     }
 
     /// Add a text child.
-    pub fn push_text(&mut self, text: impl Into<String>) {
-        self.children.push(Node::Text(text.into()));
+    pub fn push_text(&mut self, text: Stem) {
+        self.children.push(Node::Text(text));
     }
 
     /// Add an element child.
@@ -266,10 +266,10 @@ impl Element {
     }
 
     /// Get text content of this element and all descendants.
-    pub fn text_content(&self) -> String {
+    pub fn text_content(&self) -> Stem {
         let mut out = String::new();
         self.collect_text(&mut out);
-        out
+        out.into()
     }
 
     fn collect_text(&self, out: &mut String) {
@@ -300,7 +300,7 @@ impl Element {
     }
 
     /// Get mutable reference to attrs at a path.
-    pub fn attrs_mut(&mut self, path: &[usize]) -> Result<&mut IndexMap<String, String>, String> {
+    pub fn attrs_mut(&mut self, path: &[usize]) -> Result<&mut IndexMap<Stem, Stem>, String> {
         let mut current = self;
         for &idx in path {
             let child = current

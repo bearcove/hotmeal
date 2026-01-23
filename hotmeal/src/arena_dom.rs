@@ -16,8 +16,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use tendril::{StrTendril, TendrilSink};
 
-use crate::debug;
 use crate::diff::{InsertContent, NodeRef, Patch};
+use crate::{Stem, debug};
 
 /// Document = Arena (strings are StrTendrils with refcounted sharing)
 #[derive(Debug, Clone)]
@@ -115,7 +115,7 @@ impl Document {
     }
 
     /// Apply patches to this document (modifying it in place).
-    pub fn apply_patches(&mut self, patches: &[Patch]) -> Result<(), String> {
+    pub fn apply_patches(&mut self, patches: Vec<Patch>) -> Result<(), Stem> {
         // Slots hold NodeIds that were displaced during edits
         let mut slots: HashMap<u32, NodeId> = HashMap::new();
 
@@ -127,7 +127,7 @@ impl Document {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn apply_patch(&mut self, patch: &Patch, slots: &mut HashMap<u32, NodeId>) -> Result<(), Stem> {
+    fn apply_patch(&mut self, patch: Patch, slots: &mut HashMap<u32, NodeId>) -> Result<(), Stem> {
         debug!("Applying patch: {:#?}", patch);
         match patch {
             Patch::InsertElement {
@@ -153,7 +153,7 @@ impl Document {
                     new_node.append(child_node, &mut self.arena);
                 }
 
-                self.insert_at(at, new_node, *detach_to_slot, slots)?;
+                self.insert_at(&at, new_node, detach_to_slot, slots)?;
             }
             Patch::InsertText {
                 at,
@@ -161,10 +161,10 @@ impl Document {
                 detach_to_slot,
             } => {
                 let new_node = self.arena.new_node(NodeData {
-                    kind: NodeKind::Text(text.clone()),
+                    kind: NodeKind::Text(text),
                     ns: Namespace::Html,
                 });
-                self.insert_at(at, new_node, *detach_to_slot, slots)?;
+                self.insert_at(&at, new_node, detach_to_slot, slots)?;
             }
             Patch::InsertComment {
                 at,
@@ -172,12 +172,12 @@ impl Document {
                 detach_to_slot,
             } => {
                 let new_node = self.arena.new_node(NodeData {
-                    kind: NodeKind::Comment(text.clone()),
+                    kind: NodeKind::Comment(text),
                     ns: Namespace::Html,
                 });
-                self.insert_at(at, new_node, *detach_to_slot, slots)?;
+                self.insert_at(&at, new_node, detach_to_slot, slots)?;
             }
-            Patch::Remove { node } => match node {
+            Patch::Remove { node } => match &node {
                 NodeRef::Path(path) => {
                     // Replace with empty text node to preserve sibling positions
                     let node_id = self.navigate_path(&path.0)?;
@@ -188,16 +188,16 @@ impl Document {
                     node_id.insert_before(empty_text, &mut self.arena);
                     node_id.detach(&mut self.arena);
                 }
-                NodeRef::Slot(_slot, _rel_path) => {
+                NodeRef::Slot(slot, _rel_path) => {
                     // Slots are already detached - just remove from map
-                    slots.remove(_slot);
+                    slots.remove(slot);
                 }
             },
             Patch::SetText { path, text } => {
                 let node_id = self.navigate_path(&path.0)?;
                 let node_data = self.arena[node_id].get_mut();
                 if let NodeKind::Text(t) = &mut node_data.kind {
-                    *t = text.clone();
+                    *t = text;
                 } else {
                     return Err(Stem::from("SetText: node is not a text node"));
                 }
@@ -206,7 +206,7 @@ impl Document {
                 let node_id = self.navigate_path(&path.0)?;
                 let node_data = self.arena[node_id].get_mut();
                 if let NodeKind::Element(elem) = &mut node_data.kind {
-                    elem.attrs.insert(name.clone(), value.clone());
+                    elem.attrs.insert(name, value);
                 } else {
                     return Err(Stem::from("SetAttribute: node is not an element"));
                 }
@@ -215,7 +215,7 @@ impl Document {
                 let node_id = self.navigate_path(&path.0)?;
                 let node_data = self.arena[node_id].get_mut();
                 if let NodeKind::Element(elem) = &mut node_data.kind {
-                    elem.attrs.shift_remove(name);
+                    elem.attrs.shift_remove(&name);
                 } else {
                     return Err(Stem::from("RemoveAttribute: node is not an element"));
                 }
@@ -225,11 +225,11 @@ impl Document {
                 to,
                 detach_to_slot,
             } => {
-                let node_to_move = self.resolve_node_ref(from, slots)?;
+                let node_to_move = self.resolve_node_ref(&from, slots)?;
 
                 // Replace source position with empty text (no shifting!)
                 // Exception: Slot(_, None) means moving the entire slot root
-                let needs_replacement = match from {
+                let needs_replacement = match &from {
                     NodeRef::Path(_) => true,
                     NodeRef::Slot(_, rel_path) => rel_path.is_some(),
                 };
@@ -243,7 +243,7 @@ impl Document {
                     node_to_move.detach(&mut self.arena);
                 }
 
-                self.insert_at(to, node_to_move, *detach_to_slot, slots)?;
+                self.insert_at(&to, node_to_move, detach_to_slot, slots)?;
             }
             Patch::UpdateProps { path, changes } => {
                 let node_id = self.navigate_path(&path.0)?;
@@ -279,14 +279,14 @@ impl Document {
                                 "UpdateProps: processing attr {} value={:?}",
                                 change.name, change.value
                             );
-                            let value = if let Some(new_value) = &change.value {
+                            let value = if let Some(new_value) = change.value {
                                 // Different value - use the new one
-                                new_value.clone()
+                                new_value
                             } else {
                                 // Same value - copy from old attrs
                                 old_attrs.get(&change.name).cloned().unwrap_or_default()
                             };
-                            elem.attrs.insert(change.name.clone(), value);
+                            elem.attrs.insert(change.name, value);
                         }
                     }
                     debug!("UpdateProps: final attrs_count={}", elem.attrs.len());
@@ -439,7 +439,7 @@ impl Document {
         Ok(())
     }
 
-    fn create_insert_content(&mut self, content: &InsertContent) -> Result<NodeId, String> {
+    fn create_insert_content(&mut self, content: InsertContent) -> Result<NodeId, Stem> {
         match content {
             InsertContent::Element {
                 tag,
@@ -447,11 +447,8 @@ impl Document {
                 children,
             } => {
                 let elem_data = ElementData {
-                    tag: StrTendril::from(tag.as_str()),
-                    attrs: attrs
-                        .iter()
-                        .map(|(k, v)| (k.clone(), StrTendril::from(v.as_str())))
-                        .collect(),
+                    tag,
+                    attrs: attrs.into_iter().collect(),
                 };
                 let node = self.arena.new_node(NodeData {
                     kind: NodeKind::Element(elem_data),
@@ -467,14 +464,14 @@ impl Document {
             }
             InsertContent::Text(text) => {
                 let node = self.arena.new_node(NodeData {
-                    kind: NodeKind::Text(StrTendril::from(text.as_str())),
+                    kind: NodeKind::Text(text),
                     ns: Namespace::Html,
                 });
                 Ok(node)
             }
             InsertContent::Comment(text) => {
                 let node = self.arena.new_node(NodeData {
-                    kind: NodeKind::Comment(StrTendril::from(text.as_str())),
+                    kind: NodeKind::Comment(text),
                     ns: Namespace::Html,
                 });
                 Ok(node)
@@ -602,9 +599,9 @@ pub struct ElementData {
     /// Tag name (StrTendril shares buffer with source via refcounting)
     pub tag: StrTendril,
 
-    /// Attributes - keys are String (to avoid clippy mutable_key_type), values are StrTendril
-    /// IndexMap preserves insertion order for consistent serialization
-    pub attrs: IndexMap<String, StrTendril>,
+    /// Attributes - IndexMap preserves insertion order for consistent serialization
+    #[allow(clippy::mutable_key_type)]
+    pub attrs: IndexMap<Stem, Stem>,
 }
 
 /// XML namespace
@@ -766,12 +763,11 @@ impl TreeSink for ArenaSink {
         let tag = StrTendril::from(name.local.as_ref());
         let ns = Namespace::from_url(name.ns.as_ref());
 
-        // Convert attributes - keys are String, values are StrTendril
-        // IndexMap preserves insertion order from HTML
+        // Convert attributes - IndexMap preserves insertion order from HTML
         let attr_map: IndexMap<_, _> = attrs
             .into_iter()
             .map(|attr| {
-                let key = attr.name.local.to_string();
+                let key = Stem::from(attr.name.local.as_ref());
                 let value = attr.value.clone(); // StrTendril clone is cheap (refcounted)
                 (key, value)
             })
@@ -878,10 +874,8 @@ impl TreeSink for ArenaSink {
         let node = &mut arena[*target].get_mut();
         if let NodeKind::Element(elem) = &mut node.kind {
             for attr in attrs {
-                let key = attr.name.local.to_string();
-                elem.attrs.entry(key).or_insert_with(|| {
-                    attr.value.clone() // StrTendril clone is cheap (refcounted)
-                });
+                let key = Stem::from(attr.name.local.as_ref());
+                elem.attrs.entry(key).or_insert(attr.value);
             }
         }
     }
