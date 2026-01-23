@@ -11,7 +11,6 @@
 //! ```rust
 //! use hotmeal::{parse, NodeKind};
 //!
-//! // Parse a full document - uses zero-copy via Stem
 //! let doc = parse("<!DOCTYPE html><html><body><p>Hello!</p></body></html>");
 //! assert_eq!(doc.doctype.as_ref().map(|s| s.as_ref()), Some("html"));
 //!
@@ -28,22 +27,32 @@
 //! let html = doc.to_html();
 //! ```
 
-use tendril::{NonAtomic, Tendril, fmt::UTF8};
-
 mod diff;
 mod dom;
+mod stem;
 mod tracing_macros;
 
-// Re-export arena_dom types and functions as the primary API
 pub use cinereus::indextree::NodeId;
 pub use diff::{
     AttrPair, DiffError, HtmlNodeKind, HtmlProps, HtmlTreeTypes, InsertContent, NodePath, NodeRef,
     Patch, PropChange, PropKey, diff, diff_html,
 };
 pub use dom::{Document, ElementData, Namespace, NodeData, NodeKind, parse};
-
-// Re-export html5ever types needed for attribute manipulation
 pub use html5ever::{LocalName, QualName, local_name, namespace_url, ns};
+pub use stem::Stem;
 
-/// Zero-copy string tendril
-pub type Stem = Tendril<UTF8, NonAtomic>;
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    const fn assert_sync<T: Sync>() {}
+    assert_send::<Document>();
+    assert_sync::<Document>();
+};
+
+// Assert that Document<'a> is covariant in 'a
+// (can shorten lifetime: Document<'long> -> Document<'short>)
+fn _assert_document_covariant<'long, 'short>(x: Document<'long>) -> Document<'short>
+where
+    'long: 'short,
+{
+    x
+}

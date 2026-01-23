@@ -78,20 +78,20 @@ impl From<&QualName> for QualNameProxy {
 
 /// An attribute name-value pair
 #[derive(Debug, Clone, PartialEq, Eq, Facet)]
-pub struct AttrPair {
+pub struct AttrPair<'a> {
     #[facet(opaque, proxy = QualNameProxy)]
     pub name: QualName,
-    pub value: Stem,
+    pub value: Stem<'a>,
 }
 
-impl From<(QualName, Stem)> for AttrPair {
-    fn from((name, value): (QualName, Stem)) -> Self {
+impl<'a> From<(QualName, Stem<'a>)> for AttrPair<'a> {
+    fn from((name, value): (QualName, Stem<'a>)) -> Self {
         AttrPair { name, value }
     }
 }
 
-impl From<AttrPair> for (QualName, Stem) {
-    fn from(pair: AttrPair) -> Self {
+impl<'a> From<AttrPair<'a>> for (QualName, Stem<'a>) {
+    fn from(pair: AttrPair<'a>) -> Self {
         (pair.name, pair.value)
     }
 }
@@ -186,35 +186,35 @@ pub struct NodeRef(pub NodePath);
 /// Content that can be inserted as part of a new subtree.
 #[derive(Debug, Clone, PartialEq, Eq, facet::Facet)]
 #[repr(u8)]
-pub enum InsertContent {
+pub enum InsertContent<'a> {
     /// An element with its tag, attributes, and nested children
     Element {
         #[facet(opaque, proxy = LocalNameProxy)]
         tag: LocalName,
-        attrs: Vec<AttrPair>,
-        children: Vec<InsertContent>,
+        attrs: Vec<AttrPair<'a>>,
+        children: Vec<InsertContent<'a>>,
     },
     /// A text node
-    Text(Stem),
+    Text(Stem<'a>),
     /// A comment node
-    Comment(Stem),
+    Comment(Stem<'a>),
 }
 
 /// A property in the final state within an UpdateProps operation.
 /// The vec position determines the final ordering.
 #[derive(Debug, Clone, PartialEq, Eq, facet::Facet)]
-pub struct PropChange {
+pub struct PropChange<'a> {
     /// The property key (attribute name)
     pub name: PropKey,
     /// The value: None means "keep existing value", Some means "update to this value".
     /// Properties not in the list are implicitly removed.
-    pub value: Option<Stem>,
+    pub value: Option<Stem<'a>>,
 }
 
 /// Operations to transform the DOM.
 #[derive(Debug, Clone, PartialEq, Eq, facet::Facet)]
 #[repr(u8)]
-pub enum Patch {
+pub enum Patch<'a> {
     /// Insert an element at a position.
     /// The `at` NodeRef path includes the position as the last segment.
     /// Path `[slot, a, b, c]` means: in slot, navigate to a, then b, then insert at position c.
@@ -222,22 +222,22 @@ pub enum Patch {
         at: NodeRef,
         #[facet(opaque, proxy = LocalNameProxy)]
         tag: LocalName,
-        attrs: Vec<AttrPair>,
-        children: Vec<InsertContent>,
+        attrs: Vec<AttrPair<'a>>,
+        children: Vec<InsertContent<'a>>,
         detach_to_slot: Option<u32>,
     },
 
     /// Insert a text node at a position.
     InsertText {
         at: NodeRef,
-        text: Stem,
+        text: Stem<'a>,
         detach_to_slot: Option<u32>,
     },
 
     /// Insert a comment node at a position.
     InsertComment {
         at: NodeRef,
-        text: Stem,
+        text: Stem<'a>,
         detach_to_slot: Option<u32>,
     },
 
@@ -245,14 +245,14 @@ pub enum Patch {
     Remove { node: NodeRef },
 
     /// Update text content of a text node at path.
-    SetText { path: NodePath, text: Stem },
+    SetText { path: NodePath, text: Stem<'a> },
 
     /// Set attribute on element at path
     SetAttribute {
         path: NodePath,
         #[facet(opaque, proxy = QualNameProxy)]
         name: QualName,
-        value: Stem,
+        value: Stem<'a>,
     },
 
     /// Remove attribute from element at path
@@ -272,7 +272,7 @@ pub enum Patch {
     /// Update multiple properties on an element.
     UpdateProps {
         path: NodePath,
-        changes: Vec<PropChange>,
+        changes: Vec<PropChange<'a>>,
     },
 }
 
@@ -305,15 +305,15 @@ impl std::fmt::Display for HtmlNodeKind {
 /// HTML element properties (attributes only).
 /// Text content is stored separately in NodeData::text.
 #[derive(Debug, Clone, Default)]
-pub struct HtmlProps {
+pub struct HtmlProps<'a> {
     /// Attributes - Vec preserves insertion order for consistent serialization
     /// Keys are QualName (preserves namespace for xlink:href, xml:lang, etc.)
-    pub attrs: Vec<(QualName, Stem)>,
+    pub attrs: Vec<(QualName, Stem<'a>)>,
 }
 
-impl Properties for HtmlProps {
+impl<'a> Properties for HtmlProps<'a> {
     type Key = PropKey;
-    type Value = Stem;
+    type Value = Stem<'a>;
 
     #[allow(clippy::mutable_key_type)]
     fn similarity(&self, other: &Self) -> f64 {
@@ -364,21 +364,21 @@ impl Properties for HtmlProps {
 }
 
 /// Tree types marker for HTML DOM.
-pub struct HtmlTreeTypes;
+pub struct HtmlTreeTypes<'a>(std::marker::PhantomData<&'a ()>);
 
-impl TreeTypes for HtmlTreeTypes {
+impl<'a> TreeTypes for HtmlTreeTypes<'a> {
     type Kind = HtmlNodeKind;
-    type Props = HtmlProps;
-    type Text = Stem;
+    type Props = HtmlProps<'a>;
+    type Text = Stem<'a>;
 }
 
 /// Pre-computed diff data for a node.
-struct DiffNodeData {
+struct DiffNodeData<'a> {
     hash: NodeHash,
     kind: HtmlNodeKind,
-    props: HtmlProps,
+    props: HtmlProps<'a>,
     /// Text content for text/comment nodes
-    text: Option<Stem>,
+    text: Option<Stem<'a>>,
     height: usize,
     /// Cached position among siblings (0-indexed), computed on-demand
     position: Cell<Option<u32>>,
@@ -389,18 +389,18 @@ struct DiffNodeData {
 /// This allows diffing Documents directly without building a separate cinereus Tree.
 /// The wrapper pre-computes hashes and caches kind/props for each node.
 pub struct DiffableDocument<'a> {
-    doc: &'a Document,
+    doc: &'a Document<'a>,
     /// The root for diffing (body element)
     body_id: NodeId,
     /// Pre-computed diff data indexed by NodeId
-    nodes: HashMap<NodeId, DiffNodeData>,
+    nodes: HashMap<NodeId, DiffNodeData<'a>>,
 }
 
 impl<'a> DiffableDocument<'a> {
     /// Create a new DiffableDocument from a Document.
     ///
     /// Pre-computes hashes and caches kind/props for all body descendants.
-    pub fn new(doc: &'a Document) -> Self {
+    pub fn new(doc: &'a Document<'a>) -> Self {
         let body_id = doc.body().expect("document must have body");
         // Pre-allocate based on arena size (upper bound for descendants)
         let mut nodes = HashMap::with_capacity(doc.arena.count());
@@ -497,8 +497,8 @@ impl<'a> DiffableDocument<'a> {
     }
 }
 
-impl DiffTree for DiffableDocument<'_> {
-    type Types = HtmlTreeTypes;
+impl<'a> DiffTree for DiffableDocument<'a> {
+    type Types = HtmlTreeTypes<'a>;
 
     fn root(&self) -> NodeId {
         self.body_id
@@ -519,14 +519,14 @@ impl DiffTree for DiffableDocument<'_> {
             .expect("node must exist")
     }
 
-    fn properties(&self, id: NodeId) -> &HtmlProps {
+    fn properties(&self, id: NodeId) -> &HtmlProps<'a> {
         self.nodes
             .get(&id)
             .map(|d| &d.props)
             .expect("node must exist")
     }
 
-    fn text(&self, id: NodeId) -> Option<&Stem> {
+    fn text(&self, id: NodeId) -> Option<&Stem<'a>> {
         self.nodes.get(&id).and_then(|d| d.text.as_ref())
     }
 
@@ -582,13 +582,13 @@ impl DiffTree for DiffableDocument<'_> {
 }
 
 /// Post-order iterator over tree nodes.
-struct PostOrderIterator<'a> {
-    arena: &'a indextree::Arena<dom::NodeData>,
+struct PostOrderIterator<'a, 'b> {
+    arena: &'a indextree::Arena<dom::NodeData<'b>>,
     stack: Vec<(NodeId, bool)>,
 }
 
-impl<'a> PostOrderIterator<'a> {
-    fn new(root: NodeId, arena: &'a indextree::Arena<dom::NodeData>) -> Self {
+impl<'a, 'b> PostOrderIterator<'a, 'b> {
+    fn new(root: NodeId, arena: &'a indextree::Arena<dom::NodeData<'b>>) -> Self {
         Self {
             arena,
             stack: vec![(root, false)],
@@ -596,7 +596,7 @@ impl<'a> PostOrderIterator<'a> {
     }
 }
 
-impl Iterator for PostOrderIterator<'_> {
+impl Iterator for PostOrderIterator<'_, '_> {
     type Item = NodeId;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -615,7 +615,7 @@ impl Iterator for PostOrderIterator<'_> {
 }
 
 /// Build a cinereus tree from an arena_dom::Document (body content only).
-pub fn build_tree_from_arena(doc: &Document) -> Tree<HtmlTreeTypes> {
+pub fn build_tree_from_arena<'a>(doc: &Document<'a>) -> Tree<HtmlTreeTypes<'a>> {
     // Find body element
     let body_id = doc.body().expect("document must have body");
     let body_node = doc.get(body_id);
@@ -646,10 +646,10 @@ pub fn build_tree_from_arena(doc: &Document) -> Tree<HtmlTreeTypes> {
     tree
 }
 
-fn add_arena_children(
-    tree: &mut Tree<HtmlTreeTypes>,
+fn add_arena_children<'a>(
+    tree: &mut Tree<HtmlTreeTypes<'a>>,
     parent: indextree::NodeId,
-    doc: &Document,
+    doc: &Document<'a>,
     arena_parent: indextree::NodeId,
 ) {
     let children: Vec<_> = arena_parent.children(&doc.arena).collect();
@@ -709,7 +709,7 @@ fn add_arena_children(
 /// The hash captures: node kind + text content + children structure (Merkle-tree style).
 /// Attributes are NOT included - they're compared via the Properties trait after matching,
 /// using similarity scores to decide whether nodes should match.
-fn recompute_hashes(tree: &mut Tree<HtmlTreeTypes>) {
+fn recompute_hashes(tree: &mut Tree<HtmlTreeTypes<'_>>) {
     // Process in post-order (children before parents)
     let nodes: Vec<NodeId> = tree.post_order().collect();
 
@@ -743,7 +743,8 @@ fn recompute_hashes(tree: &mut Tree<HtmlTreeTypes>) {
 /// Diff two HTML strings and return DOM patches.
 ///
 /// Parses both HTML strings and diffs them.
-pub fn diff_html(old_html: &str, new_html: &str) -> Result<Vec<Patch>, DiffError> {
+/// Both HTML strings must have the same lifetime since patches may borrow from either.
+pub fn diff_html<'a>(old_html: &'a str, new_html: &'a str) -> Result<Vec<Patch<'a>>, DiffError> {
     let old_doc = dom::parse(old_html);
     let new_doc = dom::parse(new_html);
     diff(&old_doc, &new_doc)
@@ -752,7 +753,7 @@ pub fn diff_html(old_html: &str, new_html: &str) -> Result<Vec<Patch>, DiffError
 /// Diff two arena documents and return DOM patches.
 ///
 /// This is the primary diffing API for arena_dom documents.
-pub fn diff(old: &Document, new: &Document) -> Result<Vec<Patch>, DiffError> {
+pub fn diff<'a>(old: &Document<'a>, new: &Document<'a>) -> Result<Vec<Patch<'a>>, DiffError> {
     // Build cinereus Tree for old (needed for shadow tree mutation)
     let tree_a = build_tree_from_arena(old);
     // Use DiffableDocument for new (avoids second tree allocation)
@@ -814,16 +815,19 @@ pub fn diff(old: &Document, new: &Document) -> Result<Vec<Patch>, DiffError> {
 ///
 /// All paths start with the slot number: [0, 1, 2] means slot 0, child 1, child 2.
 /// This eliminates the need for separate tracking of detached nodes.
-struct ShadowTree {
-    arena: indextree::Arena<NodeData<HtmlTreeTypes>>,
+struct ShadowTree<'a> {
+    arena: indextree::Arena<NodeData<HtmlTreeTypes<'a>>>,
     /// The super root - its children are slot nodes
     super_root: NodeId,
     /// Number of slots (slot 0 always exists, created in new())
     next_slot: u32,
 }
 
-impl ShadowTree {
-    fn new(mut arena: indextree::Arena<NodeData<HtmlTreeTypes>>, original_root: NodeId) -> Self {
+impl<'a> ShadowTree<'a> {
+    fn new(
+        mut arena: indextree::Arena<NodeData<HtmlTreeTypes<'a>>>,
+        original_root: NodeId,
+    ) -> Self {
         // Create the super root (a meta node, not a real DOM node)
         let super_root = arena.new_node(NodeData {
             hash: NodeHash(0),
@@ -1127,12 +1131,12 @@ impl ShadowTree {
 ///
 /// Key insight from Chawathe semantics: INSERT and MOVE do NOT shift siblings.
 /// They DISPLACE whatever is at the target position into a slot for later use.
-fn convert_ops_with_shadow<T: DiffTree<Types = HtmlTreeTypes>>(
-    ops: Vec<EditOp<HtmlTreeTypes>>,
-    tree_a: &Tree<HtmlTreeTypes>,
+fn convert_ops_with_shadow<'a, T: DiffTree<Types = HtmlTreeTypes<'a>>>(
+    ops: Vec<EditOp<HtmlTreeTypes<'a>>>,
+    tree_a: &Tree<HtmlTreeTypes<'a>>,
     tree_b: &T,
     matching: &Matching,
-) -> Result<Vec<Patch>, DiffError> {
+) -> Result<Vec<Patch<'a>>, DiffError> {
     // Create shadow tree with encapsulated state
     let mut shadow = ShadowTree::new(tree_a.arena.clone(), tree_a.root);
 
@@ -1380,12 +1384,12 @@ fn convert_ops_with_shadow<T: DiffTree<Types = HtmlTreeTypes>>(
 }
 
 /// Extract attributes and children from a node in tree_b.
-fn extract_content_from_tree_b<T: DiffTree<Types = HtmlTreeTypes>>(
+fn extract_content_from_tree_b<'a, T: DiffTree<Types = HtmlTreeTypes<'a>>>(
     node_b: NodeId,
     tree_b: &T,
     b_to_shadow: &HashMap<NodeId, NodeId>,
     nodes_with_insert_ops: &HashSet<NodeId>,
-) -> (Vec<AttrPair>, Vec<InsertContent>) {
+) -> (Vec<AttrPair<'a>>, Vec<InsertContent<'a>>) {
     let props = tree_b.properties(node_b);
     let attrs: Vec<_> = props
         .attrs
