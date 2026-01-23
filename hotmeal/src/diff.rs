@@ -15,6 +15,7 @@ use cinereus::{
 use facet::Facet;
 use html5ever::{LocalName, QualName};
 use rapidhash::RapidHasher;
+use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
@@ -143,9 +144,13 @@ pub enum DiffError {
 }
 
 /// A path to a node in the DOM tree.
+///
+/// Uses SmallVec<[u32; 16]> to avoid heap allocations for typical DOM depths.
+/// Most HTML documents have paths shorter than 16 elements, and u32 is plenty
+/// for child indices (no element has billions of children).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, facet::Facet)]
 #[facet(transparent)]
-pub struct NodePath(pub Vec<usize>);
+pub struct NodePath(pub SmallVec<[u32; 16]>);
 
 impl std::fmt::Display for NodePath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -858,8 +863,8 @@ impl ShadowTree {
     /// - text is child 0 of div
     ///
     /// Note: The slot content root's position within the slot node is NOT included.
-    fn compute_path(&self, node: NodeId) -> Vec<usize> {
-        let mut path = Vec::new();
+    fn compute_path(&self, node: NodeId) -> SmallVec<[u32; 16]> {
+        let mut path = SmallVec::new();
         let mut current = node;
 
         while let Some(parent_id) = self.arena.get(current).and_then(|n| n.parent()) {
@@ -872,7 +877,7 @@ impl ShadowTree {
                     .super_root
                     .children(&self.arena)
                     .position(|c| c == parent_id)
-                    .unwrap_or(0);
+                    .unwrap_or(0) as u32;
                 path.push(slot);
                 break;
             }
@@ -881,7 +886,7 @@ impl ShadowTree {
             let position = parent_id
                 .children(&self.arena)
                 .position(|c| c == current)
-                .unwrap_or(0);
+                .unwrap_or(0) as u32;
             path.push(position);
             current = parent_id;
         }
@@ -900,7 +905,7 @@ impl ShadowTree {
     /// Get a NodeRef with a specific position appended (for insert/move targets).
     fn get_node_ref_with_position(&self, parent: NodeId, position: usize) -> NodeRef {
         let mut path = self.compute_path(parent);
-        path.push(position);
+        path.push(position as u32);
         NodeRef(NodePath(path))
     }
 
@@ -1707,7 +1712,7 @@ mod tests {
         match &patches[0] {
             Patch::UpdateProps { path, changes } => {
                 // Path: [slot=0, div=0, text=0] - slot 0, first child of body (div), first child of div (text)
-                assert_eq!(path.0, vec![0, 0, 0]);
+                assert_eq!(path.0.as_slice(), &[0, 0, 0]);
                 assert_eq!(changes.len(), 1);
                 assert!(matches!(changes[0].name, PropKey::Text));
                 assert_eq!(changes[0].value, Some(Stem::from("New content")));
