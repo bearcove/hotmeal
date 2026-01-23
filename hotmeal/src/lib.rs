@@ -34,18 +34,9 @@ mod tracing_macros;
 
 pub mod arena_dom;
 pub mod diff;
-pub mod parser;
-pub mod serialize;
-pub mod untyped_dom;
 
 // Re-export arena_dom types and functions as the primary API
 pub use arena_dom::{Document, ElementData, Namespace, NodeData, NodeKind, parse};
-
-// Legacy: keep untyped_dom for backwards compatibility but don't promote it
-// Users can still access via hotmeal::untyped_dom::* if needed
-
-// Re-export serialization (will be updated to work with arena_dom)
-pub use serialize::{SerializeOptions, serialize_document, serialize_element, serialize_fragment};
 
 /// Zero-copy string tendril
 pub type Stem = Tendril<UTF8, NonAtomic>;

@@ -22,14 +22,9 @@
 //! assert!(old.to_html().contains("World"));
 //! ```
 
-mod apply;
 mod tree;
 
-pub use apply::{Content, Element, apply_patches, parse_html};
 pub use tree::{diff_arena_documents, diff_elements};
-
-// Re-export patch types
-pub use apply::Content as ApplyContent;
 
 use crate::Stem;
 
@@ -166,18 +161,4 @@ pub fn diff_html(old_html: &str, new_html: &str) -> Result<Vec<Patch>, String> {
     let old_doc = crate::arena_dom::parse(old_html);
     let new_doc = crate::arena_dom::parse(new_html);
     diff_arena_documents(&old_doc, &new_doc)
-}
-
-/// Legacy: Diff two untyped_dom Element trees and return DOM patches.
-///
-/// For backwards compatibility. New code should use `diff()` with arena_dom.
-pub fn diff_untyped(
-    old: &crate::untyped_dom::Element,
-    new: &crate::untyped_dom::Element,
-) -> Result<Vec<Patch>, String> {
-    // Convert to diff module types
-    let old_elem: Element = old.into();
-    let new_elem: Element = new.into();
-
-    diff_elements(&old_elem, &new_elem)
 }

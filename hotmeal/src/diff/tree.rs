@@ -3,9 +3,9 @@
 //! This module implements cinereus traits directly on hotmeal's DOM types,
 //! bypassing the facet reflection layer for simpler, more efficient diffing.
 
-use crate::debug;
 #[allow(unused_imports)]
 use crate::trace;
+use crate::{Stem, debug};
 use cinereus::{
     EditOp, Matching, MatchingConfig, NodeData, NodeHash, PropValue, Properties,
     PropertyInFinalState, Tree, TreeTypes,
@@ -15,21 +15,15 @@ use indexmap::IndexMap;
 use rapidhash::RapidHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use tendril::fmt::UTF8;
-use tendril::{Atomic, Tendril};
 
-/// String tendril with atomic refcounting (Send but not Sync)
-type Stem = Tendril<UTF8, Atomic>;
-
-use super::apply::{Content, Element};
 use super::{InsertContent, NodePath, NodeRef, Patch, PropChange};
 use crate::arena_dom;
 
 /// Node kind in the HTML tree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum HtmlNodeKind {
-    /// An element node with a tag name (String since Kind must be Sync)
-    Element(String),
+    /// An element node with a tag name
+    Element(Stem),
     /// A text node
     Text,
     /// A comment node
@@ -131,21 +125,6 @@ impl TreeTypes for HtmlTreeTypes {
     type Props = HtmlProps;
 }
 
-/// Build a cinereus tree from an Element.
-pub fn build_tree(element: &Element) -> Tree<HtmlTreeTypes> {
-    let root_data = make_element_node_data(element);
-    let mut tree = Tree::new(root_data);
-
-    // Add children recursively
-    let root = tree.root;
-    add_children(&mut tree, root, &element.children);
-
-    // Recompute hashes bottom-up
-    recompute_hashes(&mut tree);
-
-    tree
-}
-
 /// Build a cinereus tree from an arena_dom::Document (body content only).
 pub fn build_tree_from_arena(doc: &arena_dom::Document) -> Tree<HtmlTreeTypes> {
     // Find body element
@@ -154,14 +133,14 @@ pub fn build_tree_from_arena(doc: &arena_dom::Document) -> Tree<HtmlTreeTypes> {
 
     // Create root as body element
     let body_tag = if let arena_dom::NodeKind::Element(elem) = &body_node.kind {
-        elem.tag.as_ref()
+        elem.tag.clone()
     } else {
         panic!("body must be an element");
     };
 
     let root_data = NodeData {
         hash: NodeHash(0),
-        kind: HtmlNodeKind::Element(body_tag.to_string()),
+        kind: HtmlNodeKind::Element(body_tag),
         properties: HtmlProps {
             attrs: IndexMap::new(),
             text: None,
@@ -192,7 +171,7 @@ fn add_arena_children(
         let child_node = doc.get(child_id);
         match &child_node.kind {
             arena_dom::NodeKind::Element(elem) => {
-                let kind = HtmlNodeKind::Element(elem.tag.as_ref().to_string());
+                let kind = HtmlNodeKind::Element(elem.tag.clone());
                 let props = HtmlProps {
                     attrs: elem
                         .attrs
@@ -239,44 +218,6 @@ fn add_arena_children(
                 // Skip document nodes
             }
         }
-    }
-}
-
-fn add_children(tree: &mut Tree<HtmlTreeTypes>, parent: NodeId, children: &[Content]) {
-    for child in children.iter() {
-        match child {
-            Content::Element(elem) => {
-                let data = make_element_node_data(elem);
-                let node_id = tree.add_child(parent, data);
-                add_children(tree, node_id, &elem.children);
-            }
-            Content::Text(text) => {
-                let data = make_text_node_data(text);
-                tree.add_child(parent, data);
-            }
-            Content::Comment(comment) => {
-                let data = make_comment_node_data(comment);
-                tree.add_child(parent, data);
-            }
-        }
-    }
-}
-
-fn make_element_node_data(elem: &Element) -> NodeData<HtmlTreeTypes> {
-    let kind = HtmlNodeKind::Element(elem.tag.clone());
-    let props = HtmlProps {
-        attrs: elem
-            .attrs
-            .iter()
-            .map(|(k, v)| (Stem::from(k.as_str()), Stem::from(v.as_str())))
-            .collect(),
-        text: None,
-    };
-    // Hash will be recomputed later
-    NodeData {
-        hash: NodeHash(0),
-        kind,
-        properties: props,
     }
 }
 
