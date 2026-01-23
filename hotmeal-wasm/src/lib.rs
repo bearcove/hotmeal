@@ -469,14 +469,23 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
                     node
                 }
                 NodeRef::Slot(slot, rel_path) => {
-                    let slot_root = slots
-                        .take(*slot)
-                        .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?;
-                    // If there's a relative path, navigate to the nested node
                     if let Some(path) = rel_path {
-                        navigate_within_node(&slot_root, path)?
+                        // Moving a child within the slot - don't consume the slot
+                        let slot_root = slots
+                            .get(*slot)
+                            .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?;
+                        let node = navigate_within_node(slot_root, path)?;
+                        // Detach from parent with placeholder (Chawathe semantics)
+                        if let Some(parent) = node.parent_node() {
+                            let empty_text = doc.create_text_node("");
+                            parent.replace_child(&empty_text, &node)?;
+                        }
+                        node
                     } else {
-                        slot_root
+                        // Moving the entire slot root - consume the slot
+                        slots
+                            .take(*slot)
+                            .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?
                     }
                 }
             };

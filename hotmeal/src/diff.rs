@@ -1558,4 +1558,37 @@ mod tests {
             facet_json::from_str(&json).expect("deserialization should work");
         assert_eq!(patches, roundtrip);
     }
+
+    #[test]
+    fn test_fuzz_seed_0_template_0() {
+        use crate::diff_html;
+
+        let old_html = r##"<article>
+    <h1>Article Title</h1>
+    <p>First paragraph with <strong>bold</strong> and <em>italic</em> text.</p>
+    <p>Second paragraph with a <a href="#">link</a>.</p>
+  </article>"##;
+
+        let new_html = r##"<article>
+
+    <p>First paragraph with <strong>bold</strong> and content</p>
+    <p data-test="hidden">Second paragraph with a .</p>
+  </article>"##;
+
+        let patches = diff_html(old_html, new_html).expect("diff should work");
+        debug!("Patches: {:#?}", patches);
+
+        // Check for slot references
+        for (i, patch) in patches.iter().enumerate() {
+            debug!("Patch {}: {:?}", i, patch);
+            if let Patch::Move { from, to, .. } = patch {
+                if let NodeRef::Slot(slot, _) = from {
+                    debug!("  -> Move FROM slot {}", slot);
+                }
+                if let NodeRef::Slot(slot, _) = to {
+                    debug!("  -> Move TO slot {}", slot);
+                }
+            }
+        }
+    }
 }
