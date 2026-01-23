@@ -1,6 +1,7 @@
 //! Debug the specific fuzzer bug
 
 use facet_testhelpers::test;
+use hotmeal::Stem;
 use hotmeal::diff::{NodePath, NodeRef, Patch};
 
 #[test]
@@ -11,13 +12,13 @@ fn test_minimal_repro() {
     // Try to insert at position 1 when there's only 1 child
     let patches = vec![Patch::InsertElement {
         at: NodeRef::Path(NodePath(vec![1])),
-        tag: "p".to_string(),
+        tag: Stem::from("p"),
         attrs: vec![],
         children: vec![],
         detach_to_slot: None,
     }];
 
-    let result = doc.apply_patches(&patches);
+    let result = doc.apply_patches(patches);
     println!("Result: {:?}", result);
     assert!(result.is_ok(), "should be able to insert at end");
 }
@@ -34,7 +35,7 @@ fn test_move_within_same_parent() {
         detach_to_slot: None,
     }];
 
-    let result = doc.apply_patches(&patches);
+    let result = doc.apply_patches(patches);
     println!("Result: {:?}", result);
     println!("HTML: {}", doc.to_html());
 }

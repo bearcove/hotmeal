@@ -28,7 +28,6 @@ pub use tree::diff_arena_documents;
 
 use crate::Stem;
 use facet::Facet;
-use facet_error as error;
 
 /// Errors that can occur during diffing or patch application.
 #[derive(Facet, Debug)]

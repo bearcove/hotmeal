@@ -9,7 +9,7 @@
 use cinereus::indextree::{Arena, NodeId};
 use html5ever::tree_builder::{ElemName, ElementFlags, NodeOrText, QuirksMode, TreeSink};
 use html5ever::{Attribute, LocalName, QualName, parse_document};
-use html5ever::{local_name, namespace_url, ns};
+use html5ever::{local_name, ns};
 use indexmap::IndexMap;
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -1104,13 +1104,15 @@ mod tests {
         if let NodeKind::Element(elem) = &div_data.kind {
             assert_eq!(elem.tag.as_ref(), "div");
 
-            // Check attributes (keys are Strings)
+            // Check attributes (keys are Stem)
             assert_eq!(
-                elem.attrs.get("class").map(|v| v.as_ref()),
+                elem.attrs.get(&Stem::from("class")).map(|v| v.as_ref()),
                 Some("container")
             );
-            assert_eq!(elem.attrs.get("id").map(|v| v.as_ref()), Some("main"));
-            // StrTendril values use refcounted buffer sharing (cheap clone)
+            assert_eq!(
+                elem.attrs.get(&Stem::from("id")).map(|v| v.as_ref()),
+                Some("main")
+            );
         }
     }
 
@@ -1265,7 +1267,7 @@ mod tests {
         // Apply patches to a fresh copy of old
         let mut mut_old_doc = parse(old_html);
         mut_old_doc
-            .apply_patches(&patches)
+            .apply_patches(patches)
             .expect("patches should apply");
 
         // Check result matches new
@@ -1283,7 +1285,7 @@ mod tests {
         let patches = crate::diff::diff_arena_documents(&old_doc, &new_doc).expect("diff failed");
 
         let mut mut_old_doc = parse(old_html);
-        mut_old_doc.apply_patches(&patches).expect("apply failed");
+        mut_old_doc.apply_patches(patches).expect("apply failed");
 
         assert_eq!(mut_old_doc.to_html(), new_doc.to_html());
     }
