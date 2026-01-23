@@ -28,7 +28,7 @@ use crate::arena_dom;
 /// Node kind in the HTML tree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum HtmlNodeKind {
-    /// An element node with a tag name
+    /// An element node with a tag name (String since Kind must be Sync)
     Element(String),
     /// A text node
     Text,
