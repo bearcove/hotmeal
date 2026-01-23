@@ -22,112 +22,83 @@ Implementation: Arena DOM + Stem<'a> strings (Send+Sync, zero-copy where possibl
 - **Document is now Send+Sync** via `Stem<'a>` type (closes #21)
 - **Zero-copy parsing** when content points into the original StrTendril
 - **Breaking API change**: `parse()` now takes `&StrTendril` instead of `&str`
-
-### Trade-offs
-
-The Stem conversion adds some overhead on larger documents, but enables:
-- Thread-safe Document handling
-- Zero-copy parsing where possible
-- Consistent API with explicit ownership
+- **In-place mutation** for text merging (6000+ allocations saved on XXL docs)
 
 ## Benchmark Results
 
 ### 1. Parsing Benchmarks
 
-Measures time to parse HTML string into arena DOM:
-
-| Test | Fastest | Median | Mean | vs Previous |
-|------|---------|--------|------|-------------|
-| parse_small (8KB) | 13.87 µs | 13.99 µs | **14.34 µs** | similar |
-| parse_medium (68KB) | 925 µs | 967.1 µs | **976 µs** | 6% faster |
-| parse_large (172KB) | 1.482 ms | 1.542 ms | **1.558 ms** | 8% faster |
-| parse_xlarge (340KB) | 4.626 ms | 4.748 ms | **4.767 ms** | 67% slower* |
-
-*XLarge regression due to Stem conversion overhead on documents with many nodes.
+| Test | Fastest | Median | Mean |
+|------|---------|--------|------|
+| parse_small (8KB) | 12.66 µs | 12.87 µs | **13.39 µs** |
+| parse_medium (68KB) | 884.2 µs | 919 µs | **923.2 µs** |
+| parse_large (172KB) | 1.446 ms | 1.508 ms | **1.521 ms** |
+| parse_xlarge (340KB) | 2.46 ms | 2.565 ms | **2.579 ms** |
 
 ### 2. Serialization Benchmarks
 
-Measures time to serialize DOM back to HTML string:
-
-| Test | Fastest | Median | Mean | vs Previous |
-|------|---------|--------|------|-------------|
-| serialize_small | 8.374 µs | 8.457 µs | **8.556 µs** | similar |
-| serialize_medium | 72.58 µs | 78.14 µs | **78.73 µs** | 10% faster |
-| serialize_large | 170.5 µs | 181.7 µs | **184.1 µs** | 8% faster |
-| serialize_xlarge | 406.4 µs | 419.4 µs | **425.1 µs** | 13% faster |
+| Test | Fastest | Median | Mean |
+|------|---------|--------|------|
+| serialize_small | 8.332 µs | 8.374 µs | **8.457 µs** |
+| serialize_medium | 66.24 µs | 74.89 µs | **77.43 µs** |
+| serialize_large | 165.4 µs | 182.2 µs | **186.8 µs** |
+| serialize_xlarge | 405.9 µs | 429.8 µs | **439.7 µs** |
 
 ### 3. Diffing Benchmarks (With Parsing)
 
-Measures full diff cycle: parse old + parse new + compute diff:
-
 | Test | Fastest | Median | Mean |
 |------|---------|--------|------|
-| diff_small | 32.91 µs | 33.74 µs | **34.5 µs** |
-| diff_medium | 3.429 ms | 3.748 ms | **3.872 ms** |
-| diff_large | 4.475 ms | 4.938 ms | **4.998 ms** |
-| diff_xlarge | 11.61 ms | 12.24 ms | **12.81 ms** |
+| diff_small | 27.41 µs | 30.56 µs | **32.95 µs** |
+| diff_medium | 3.272 ms | 3.408 ms | **3.422 ms** |
+| diff_large | 4.334 ms | 4.667 ms | **4.68 ms** |
+| diff_xlarge | 6.884 ms | 7.166 ms | **7.221 ms** |
 
 ### 4. Diffing Benchmarks (Diff Only)
 
-Measures pure diff computation with pre-parsed DOMs:
-
 | Test | Fastest | Median | Mean |
 |------|---------|--------|------|
-| diff_only_small | 3.749 µs | 3.874 µs | **3.988 µs** |
-| diff_only_medium | 1.572 ms | 1.611 ms | **1.712 ms** |
-| diff_only_large | 1.395 ms | 1.492 ms | **1.521 ms** |
-| diff_only_xlarge | 1.899 ms | 2.078 ms | **2.146 ms** |
+| diff_only_small | 3.707 µs | 3.832 µs | **3.897 µs** |
+| diff_only_medium | 1.504 ms | 1.551 ms | **1.564 ms** |
+| diff_only_large | 1.375 ms | 1.414 ms | **1.429 ms** |
+| diff_only_xlarge | 1.84 ms | 1.941 ms | **1.97 ms** |
 
 ### 5. Full Hot-Reload Cycle
 
-Measures complete cycle: parse old, parse new, diff, apply patches:
-
 | Test | Fastest | Median | Mean |
 |------|---------|--------|------|
-| hot_reload_small | 30.91 µs | 31.2 µs | **32.12 µs** |
-| hot_reload_medium | 3.355 ms | 3.527 ms | **3.534 ms** |
-| hot_reload_large | 4.442 ms | 4.771 ms | **4.818 ms** |
-| hot_reload_xlarge | 11.58 ms | 12.09 ms | **12.1 ms** |
-| hot_reload_xxlarge | 13.83 ms | 14.5 ms | **14.53 ms** |
+| hot_reload_small | 29.79 µs | 30.79 µs | **31.81 µs** |
+| hot_reload_medium | 3.302 ms | 3.517 ms | **3.567 ms** |
+| hot_reload_large | 4.41 ms | 4.686 ms | **4.714 ms** |
+| hot_reload_xlarge | 6.933 ms | 7.219 ms | **7.251 ms** |
+| hot_reload_xxlarge | 9.626 ms | 10.1 ms | **10.13 ms** |
 
-## Comparison with Previous (Tendril-only)
+## Comparison with Baseline (Before Stem)
 
-| Metric | Previous | Current | Change |
-|--------|----------|---------|--------|
-| parse_small | 15.12 µs | 14.34 µs | 5% faster |
-| parse_medium | 1.04 ms | 976 µs | 6% faster |
-| parse_large | 1.69 ms | 1.558 ms | 8% faster |
-| parse_xlarge | 2.85 ms | 4.767 ms | 67% slower |
-| serialize_medium | 87.84 µs | 78.73 µs | 10% faster |
-| serialize_large | 199 µs | 184.1 µs | 8% faster |
-| serialize_xlarge | 486.6 µs | 425.1 µs | 13% faster |
-| hot_reload_small | 32.6 µs | 32.12 µs | similar |
-| hot_reload_medium | 3.48 ms | 3.534 ms | similar |
-| hot_reload_large | 4.87 ms | 4.818 ms | similar |
-| hot_reload_xlarge | 7.54 ms | 12.1 ms | 60% slower |
-| hot_reload_xxlarge | 7.46 ms | 14.53 ms | 95% slower |
+| Metric | Baseline | With Stem | Change |
+|--------|----------|-----------|--------|
+| parse_small | 15.12 µs | 13.39 µs | 11% faster |
+| parse_medium | 1.04 ms | 923.2 µs | 11% faster |
+| parse_large | 1.69 ms | 1.521 ms | 10% faster |
+| parse_xlarge | 2.85 ms | 2.579 ms | 10% faster |
+| hot_reload_small | 32.6 µs | 31.81 µs | similar |
+| hot_reload_medium | 3.48 ms | 3.567 ms | similar |
+| hot_reload_large | 4.87 ms | 4.714 ms | 3% faster |
+| hot_reload_xlarge | 7.54 ms | 7.251 ms | 4% faster |
+| hot_reload_xxlarge | 7.46 ms | 10.13 ms | 36% slower |
 
 ## Analysis
 
 ### What This Version Provides
 
 1. **Send+Sync Document** - Can now be shared across threads
-2. **Zero-copy parsing** - Content that comes from the input tendril borrows directly
-3. **Improved serialization** - 8-13% faster across medium/large docs
-4. **Improved small/medium parsing** - 5-8% faster
+2. **Zero-copy parsing** - ~11% of strings borrow from input (text merging converts rest to Owned)
+3. **Improved parsing** - 10-11% faster across all sizes
+4. **In-place text merging** - Mutates CompactString directly instead of reallocating
 
-### Trade-offs
+### Remaining Trade-off
 
-1. **XLarge document regression** - 60-95% slower on very large documents
-   - This is due to the Stem conversion checking every string
-   - The zero-copy check (`tendril_to_stem_with_input`) runs for every node
-   - On documents with thousands of nodes, this adds up
-
-### Potential Optimizations
-
-1. **Batch Stem conversion** - Convert strings in batches to reduce overhead
-2. **Skip zero-copy check for small strings** - Short strings might be faster to just copy
-3. **Use a different strategy for large documents** - Profile to find the hot path
+XXLarge documents are 36% slower due to the sheer volume of text merging operations.
+This could potentially be improved by batching or using different strategies for very large docs.
 
 ## Running Benchmarks
 
@@ -140,4 +111,7 @@ cargo bench --bench parsing
 cargo bench --bench diffing
 cargo bench --bench serialization
 cargo bench --bench full_cycle
+
+# Check zero-copy percentage
+cargo run --example stem_stats --release
 ```
