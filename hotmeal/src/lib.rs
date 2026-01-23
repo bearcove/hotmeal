@@ -11,7 +11,7 @@
 //! ```rust
 //! use hotmeal::arena_dom;
 //!
-//! // Parse a full document - uses zero-copy via StrTendril
+//! // Parse a full document - uses zero-copy via Stem
 //! let doc = arena_dom::parse("<!DOCTYPE html><html><body><p>Hello!</p></body></html>");
 //! assert_eq!(doc.doctype.as_ref().map(|s| s.as_ref()), Some("html"));
 //!
@@ -27,6 +27,8 @@
 //! // Serialize back to HTML
 //! let html = doc.to_html();
 //! ```
+
+use tendril::{NonAtomic, Tendril, fmt::UTF8};
 
 mod tracing_macros;
 
@@ -44,3 +46,6 @@ pub use arena_dom::{Document, ElementData, Namespace, NodeData, NodeKind, parse}
 
 // Re-export serialization (will be updated to work with arena_dom)
 pub use serialize::{SerializeOptions, serialize_document, serialize_element, serialize_fragment};
+
+/// Zero-copy string tendril
+type Stem = Tendril<UTF8, NonAtomic>;

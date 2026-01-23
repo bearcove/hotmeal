@@ -16,10 +16,10 @@ use rapidhash::RapidHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use tendril::fmt::UTF8;
-use tendril::{NonAtomic, Tendril};
+use tendril::{Atomic, Tendril};
 
-/// Zero-copy string tendril
-type Stem = Tendril<UTF8, NonAtomic>;
+/// String tendril with atomic refcounting (Send but not Sync)
+type Stem = Tendril<UTF8, Atomic>;
 
 use super::apply::{Content, Element};
 use super::{InsertContent, NodePath, NodeRef, Patch, PropChange};
@@ -28,8 +28,8 @@ use crate::arena_dom;
 /// Node kind in the HTML tree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum HtmlNodeKind {
-    /// An element node with a tag name
-    Element(Stem),
+    /// An element node with a tag name (String since Kind must be Sync)
+    Element(String),
     /// A text node
     Text,
     /// A comment node
@@ -160,7 +160,7 @@ pub fn build_tree_from_arena(doc: &arena_dom::Document) -> Tree<HtmlTreeTypes> {
 
     let root_data = NodeData {
         hash: NodeHash(0),
-        kind: HtmlNodeKind::Element(Stem::from(body_tag)),
+        kind: HtmlNodeKind::Element(body_tag.to_string()),
         properties: HtmlProps {
             attrs: IndexMap::new(),
             text: None,
@@ -191,12 +191,12 @@ fn add_arena_children(
         let child_node = doc.get(child_id);
         match &child_node.kind {
             arena_dom::NodeKind::Element(elem) => {
-                let kind = HtmlNodeKind::Element(elem.tag.clone());
+                let kind = HtmlNodeKind::Element(elem.tag.as_ref().to_string());
                 let props = HtmlProps {
                     attrs: elem
                         .attrs
                         .iter()
-                        .map(|(k, v)| (Stem::from(k.as_str()), v.clone()))
+                        .map(|(k, v)| (Stem::from(k.as_str()), v.clone().into_send().into()))
                         .collect(),
                     text: None,
                 };
@@ -212,7 +212,7 @@ fn add_arena_children(
                 let kind = HtmlNodeKind::Text;
                 let props = HtmlProps {
                     attrs: IndexMap::new(),
-                    text: Some(text.clone()),
+                    text: Some(text.clone().into_send().into()),
                 };
                 let data = NodeData {
                     hash: NodeHash(0),
@@ -225,7 +225,7 @@ fn add_arena_children(
                 let kind = HtmlNodeKind::Comment;
                 let props = HtmlProps {
                     attrs: IndexMap::new(),
-                    text: Some(text.clone()),
+                    text: Some(text.clone().into_send().into()),
                 };
                 let data = NodeData {
                     hash: NodeHash(0),
@@ -262,7 +262,7 @@ fn add_children(tree: &mut Tree<HtmlTreeTypes>, parent: NodeId, children: &[Cont
 }
 
 fn make_element_node_data(elem: &Element) -> NodeData<HtmlTreeTypes> {
-    let kind = HtmlNodeKind::Element(Stem::from(elem.tag.as_str()));
+    let kind = HtmlNodeKind::Element(elem.tag.clone());
     let props = HtmlProps {
         attrs: elem
             .attrs
@@ -877,7 +877,7 @@ fn convert_ops_with_shadow(
                         );
                         result.push(Patch::InsertElement {
                             at,
-                            tag: tag.to_string(),
+                            tag,
                             attrs,
                             children,
                             detach_to_slot,
@@ -1078,7 +1078,7 @@ fn extract_content_from_tree_b(
                     nodes_with_insert_ops,
                 );
                 children.push(InsertContent::Element {
-                    tag: tag.to_string(),
+                    tag: tag.clone(),
                     attrs: child_attrs,
                     children: child_children,
                 });
@@ -1124,7 +1124,7 @@ mod tests {
 
         // Root is div element
         let root_data = tree.get(tree.root);
-        assert!(matches!(root_data.kind, HtmlNodeKind::Element(ref t) if t.as_ref() == "div"));
+        assert!(matches!(root_data.kind, HtmlNodeKind::Element(ref t) if t == "div"));
 
         // One child (text)
         assert_eq!(tree.child_count(tree.root), 1);

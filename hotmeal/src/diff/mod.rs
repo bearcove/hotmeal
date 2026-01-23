@@ -31,6 +31,8 @@ pub use tree::{diff_arena_documents, diff_elements};
 // Re-export patch types
 pub use apply::Content as ApplyContent;
 
+use crate::Stem;
+
 /// A path to a node in the DOM tree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, facet::Facet)]
 #[facet(transparent)]
@@ -64,14 +66,14 @@ pub enum NodeRef {
 pub enum InsertContent {
     /// An element with its tag, attributes, and nested children
     Element {
-        tag: String,
-        attrs: Vec<(String, String)>,
+        tag: Stem,
+        attrs: Vec<(Stem, Stem)>,
         children: Vec<InsertContent>,
     },
     /// A text node
-    Text(String),
+    Text(Stem),
     /// A comment node
-    Comment(String),
+    Comment(Stem),
 }
 
 /// A property in the final state within an UpdateProps operation.
@@ -79,10 +81,10 @@ pub enum InsertContent {
 #[derive(Debug, Clone, PartialEq, Eq, facet::Facet)]
 pub struct PropChange {
     /// The property name (field name)
-    pub name: String,
+    pub name: Stem,
     /// The value: None means "keep existing value", Some means "update to this value".
     /// Properties not in the list are implicitly removed.
-    pub value: Option<String>,
+    pub value: Option<Stem>,
 }
 
 /// Operations to transform the DOM.
@@ -95,8 +97,8 @@ pub enum Patch {
     /// For Slot(n, Some(NodePath(\[a, b\]))), insert at position b within element at path \[a\] in slot n.
     InsertElement {
         at: NodeRef,
-        tag: String,
-        attrs: Vec<(String, String)>,
+        tag: Stem,
+        attrs: Vec<(Stem, Stem)>,
         children: Vec<InsertContent>,
         detach_to_slot: Option<u32>,
     },
@@ -105,7 +107,7 @@ pub enum Patch {
     /// The `at` NodeRef includes the position as the last path segment.
     InsertText {
         at: NodeRef,
-        text: String,
+        text: Stem,
         detach_to_slot: Option<u32>,
     },
 
@@ -113,7 +115,7 @@ pub enum Patch {
     /// The `at` NodeRef includes the position as the last path segment.
     InsertComment {
         at: NodeRef,
-        text: String,
+        text: Stem,
         detach_to_slot: Option<u32>,
     },
 
@@ -121,17 +123,17 @@ pub enum Patch {
     Remove { node: NodeRef },
 
     /// Update text content of a text node at path.
-    SetText { path: NodePath, text: String },
+    SetText { path: NodePath, text: Stem },
 
     /// Set attribute on element at path
     SetAttribute {
         path: NodePath,
-        name: String,
-        value: String,
+        name: Stem,
+        value: Stem,
     },
 
     /// Remove attribute from element at path
-    RemoveAttribute { path: NodePath, name: String },
+    RemoveAttribute { path: NodePath, name: Stem },
 
     /// Move a node from one location to another.
     Move {
@@ -153,11 +155,11 @@ pub enum Patch {
 pub fn diff(
     old: &crate::arena_dom::Document,
     new: &crate::arena_dom::Document,
-) -> Result<Vec<Patch>, String> {
+) -> Result<Vec<Patch>, Stem> {
     diff_arena_documents(old, new)
 }
 
-/// Diff two HTML strings and return DOM patches.
+/// Diff two HTML Stems and return DOM patches.
 ///
 /// Parses both HTML strings and diffs them.
 pub fn diff_html(old_html: &str, new_html: &str) -> Result<Vec<Patch>, String> {

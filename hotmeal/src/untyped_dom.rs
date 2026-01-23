@@ -18,6 +18,8 @@
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
+use crate::Stem;
+
 /// XML/HTML namespace for elements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, facet::Facet)]
 #[repr(u8)]
@@ -200,13 +202,13 @@ impl Node {
 pub struct Element {
     /// The tag name (lowercase for HTML, case-preserved for SVG/MathML)
     #[facet(tag)]
-    pub tag: String,
+    pub tag: Stem,
     /// The namespace (Html, Svg, or MathMl)
     #[facet(skip)]
     pub ns: Namespace,
     /// Attributes as key-value pairs (preserves insertion order)
     #[facet(flatten)]
-    pub attrs: IndexMap<String, String>,
+    pub attrs: IndexMap<Stem, Stem>,
     /// Child nodes
     #[facet(flatten)]
     pub children: Vec<Node>,
@@ -343,7 +345,7 @@ impl Default for Element {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Document {
     /// The DOCTYPE declaration (e.g., "html" for `<!DOCTYPE html>`)
-    pub doctype: Option<String>,
+    pub doctype: Option<Stem>,
     /// The root html element
     pub root: Element,
 }
