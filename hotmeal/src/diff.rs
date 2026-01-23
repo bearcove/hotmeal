@@ -26,17 +26,15 @@ use crate::trace;
 #[facet(transparent)]
 pub struct LocalNameProxy(pub String);
 
-impl TryFrom<LocalNameProxy> for LocalName {
-    type Error = std::convert::Infallible;
-    fn try_from(proxy: LocalNameProxy) -> Result<Self, Self::Error> {
-        Ok(LocalName::from(proxy.0))
+impl From<LocalNameProxy> for LocalName {
+    fn from(proxy: LocalNameProxy) -> Self {
+        LocalName::from(proxy.0)
     }
 }
 
-impl TryFrom<&LocalName> for LocalNameProxy {
-    type Error = std::convert::Infallible;
-    fn try_from(local: &LocalName) -> Result<Self, Self::Error> {
-        Ok(LocalNameProxy(local.to_string()))
+impl From<&LocalName> for LocalNameProxy {
+    fn from(local: &LocalName) -> Self {
+        LocalNameProxy(local.to_string())
     }
 }
 
@@ -49,26 +47,24 @@ pub struct QualNameProxy {
     pub local: String,
 }
 
-impl TryFrom<QualNameProxy> for QualName {
-    type Error = &'static str;
-    fn try_from(proxy: QualNameProxy) -> Result<Self, Self::Error> {
+impl From<QualNameProxy> for QualName {
+    fn from(proxy: QualNameProxy) -> Self {
         use html5ever::{Namespace, Prefix};
-        Ok(QualName {
-            prefix: proxy.prefix.map(|s| Prefix::from(s)),
+        QualName {
+            prefix: proxy.prefix.map(Prefix::from),
             ns: Namespace::from(proxy.ns),
             local: LocalName::from(proxy.local),
-        })
+        }
     }
 }
 
-impl TryFrom<&QualName> for QualNameProxy {
-    type Error = std::convert::Infallible;
-    fn try_from(qual: &QualName) -> Result<Self, Self::Error> {
-        Ok(QualNameProxy {
+impl From<&QualName> for QualNameProxy {
+    fn from(qual: &QualName) -> Self {
+        QualNameProxy {
             prefix: qual.prefix.as_ref().map(|p| p.to_string()),
             ns: qual.ns.to_string(),
             local: qual.local.to_string(),
-        })
+        }
     }
 }
 
@@ -641,33 +637,28 @@ impl ShadowTree {
         let mut path = Vec::new();
         let mut current = node;
 
-        loop {
-            if let Some(parent_id) = self.arena.get(current).and_then(|n| n.parent()) {
-                // Check if parent is a slot node (grandparent is super_root)
-                let grandparent = self.arena.get(parent_id).and_then(|n| n.parent());
-                if grandparent == Some(self.super_root) {
-                    // parent_id is a slot node, current is the slot content root (e.g., body)
-                    // Get the slot number and stop - don't include current's position
-                    let slot = self
-                        .super_root
-                        .children(&self.arena)
-                        .position(|c| c == parent_id)
-                        .unwrap_or(0);
-                    path.push(slot);
-                    break;
-                }
-
-                // Normal case: add position and continue up
-                let position = parent_id
+        while let Some(parent_id) = self.arena.get(current).and_then(|n| n.parent()) {
+            // Check if parent is a slot node (grandparent is super_root)
+            let grandparent = self.arena.get(parent_id).and_then(|n| n.parent());
+            if grandparent == Some(self.super_root) {
+                // parent_id is a slot node, current is the slot content root (e.g., body)
+                // Get the slot number and stop - don't include current's position
+                let slot = self
+                    .super_root
                     .children(&self.arena)
-                    .position(|c| c == current)
+                    .position(|c| c == parent_id)
                     .unwrap_or(0);
-                path.push(position);
-                current = parent_id;
-            } else {
-                // Orphaned node - shouldn't happen
+                path.push(slot);
                 break;
             }
+
+            // Normal case: add position and continue up
+            let position = parent_id
+                .children(&self.arena)
+                .position(|c| c == current)
+                .unwrap_or(0);
+            path.push(position);
+            current = parent_id;
         }
 
         path.reverse();

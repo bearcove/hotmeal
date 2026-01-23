@@ -641,10 +641,10 @@ impl Document {
             out.push(' ');
             // Serialize QualName with prefix if present
             if let Some(ref prefix) = name.prefix {
-                out.push_str(&prefix.to_string());
+                out.push_str(prefix.as_ref());
                 out.push(':');
             }
-            out.push_str(&name.local.to_string());
+            out.push_str(name.local.as_ref());
             out.push_str("=\"");
             // Escape attribute value
             for c in value.as_ref().chars() {
