@@ -28,7 +28,6 @@ tendril = { workspace = true }
 
 # Optional tracing support
 tracing = { version = "0.1", optional = true }
-indexmap = "2.13.0"
 
 [features]
 tracing = ["dep:tracing"]
