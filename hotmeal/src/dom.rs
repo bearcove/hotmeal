@@ -10,7 +10,6 @@ use cinereus::indextree::{Arena, NodeId};
 use html5ever::tree_builder::{ElemName, ElementFlags, NodeOrText, QuirksMode, TreeSink};
 use html5ever::{Attribute, LocalName, QualName, parse_document};
 use html5ever::{local_name, ns};
-use indexmap::IndexMap;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -41,7 +40,7 @@ impl Document {
         let html = arena.new_node(NodeData {
             kind: NodeKind::Element(ElementData {
                 tag: Stem::from("html"),
-                attrs: IndexMap::new(),
+                attrs: Vec::new(),
             }),
             ns: Namespace::Html,
         });
@@ -50,7 +49,7 @@ impl Document {
         let head = arena.new_node(NodeData {
             kind: NodeKind::Element(ElementData {
                 tag: Stem::from("head"),
-                attrs: IndexMap::new(),
+                attrs: Vec::new(),
             }),
             ns: Namespace::Html,
         });
@@ -60,7 +59,7 @@ impl Document {
         let body = arena.new_node(NodeData {
             kind: NodeKind::Element(ElementData {
                 tag: Stem::from("body"),
-                attrs: IndexMap::new(),
+                attrs: Vec::new(),
             }),
             ns: Namespace::Html,
         });
@@ -117,7 +116,7 @@ impl Document {
         self.arena.new_node(NodeData {
             kind: NodeKind::Element(ElementData {
                 tag: tag.into(),
-                attrs: IndexMap::new(),
+                attrs: Vec::new(),
             }),
             ns: Namespace::Html,
         })
@@ -756,16 +755,16 @@ pub enum NodeKind {
 /// Element data (tag + attributes)
 #[derive(Debug, Clone)]
 pub struct ElementData {
-    /// Tag name (Stem shares buffer with source via refcounting)
-    pub tag: Stem,
+    /// Tag name (LocalName is interned via string_cache)
+    pub tag: LocalName,
 
-    /// Attributes - IndexMap preserves insertion order for consistent serialization
-    #[allow(clippy::mutable_key_type)]
-    pub attrs: IndexMap<Stem, Stem>,
+    /// Attributes - Vec preserves insertion order for consistent serialization
+    /// Keys are QualName (preserves namespace for xlink:href, xml:lang, etc.), values are Tendril
+    pub attrs: Vec<(QualName, Stem)>,
 }
 
 /// XML namespace
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Namespace {
     Html,
     Svg,
@@ -919,20 +918,17 @@ impl TreeSink for ArenaSink {
         attrs: Vec<Attribute>,
         _flags: ElementFlags,
     ) -> Self::Handle {
-        let tag = Stem::from(name.local.as_ref());
+        let tag = name.local;
         let ns = Namespace::from_url(name.ns.as_ref());
 
-        let attr_map: IndexMap<_, _> = attrs
+        let attrs: Vec<_> = attrs
             .into_iter()
-            .map(|attr| (Stem::from(attr.name.local.as_ref()), attr.value))
+            .map(|attr| (attr.name, attr.value))
             .collect();
 
         // Create node in arena
         self.arena.borrow_mut().new_node(NodeData {
-            kind: NodeKind::Element(ElementData {
-                tag,
-                attrs: attr_map,
-            }),
+            kind: NodeKind::Element(ElementData { tag, attrs }),
             ns,
         })
     }

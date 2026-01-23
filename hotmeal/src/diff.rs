@@ -5,7 +5,7 @@
 
 use crate::{
     Stem, debug,
-    dom::{self, Document, NodeKind},
+    dom::{self, Document, Namespace, NodeKind},
 };
 use cinereus::{
     EditOp, Matching, MatchingConfig, NodeData, NodeHash, PropValue, Properties,
@@ -13,13 +13,84 @@ use cinereus::{
     indextree::{self, NodeId},
 };
 use facet::Facet;
-use indexmap::IndexMap;
+use html5ever::{LocalName, QualName};
 use rapidhash::RapidHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 #[allow(unused_imports)]
 use crate::trace;
+
+/// Proxy for LocalName serialization
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
+#[facet(transparent)]
+pub struct LocalNameProxy(pub String);
+
+impl TryFrom<LocalNameProxy> for LocalName {
+    type Error = std::convert::Infallible;
+    fn try_from(proxy: LocalNameProxy) -> Result<Self, Self::Error> {
+        Ok(LocalName::from(proxy.0))
+    }
+}
+
+impl TryFrom<&LocalName> for LocalNameProxy {
+    type Error = std::convert::Infallible;
+    fn try_from(local: &LocalName) -> Result<Self, Self::Error> {
+        Ok(LocalNameProxy(local.to_string()))
+    }
+}
+
+/// Proxy for QualName serialization (prefix, namespace, local_name)
+/// TODO: This string conversion is inefficient - consider interning namespaces or using indices
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
+pub struct QualNameProxy {
+    prefix: Option<String>,
+    ns: String,
+    local: String,
+}
+
+impl TryFrom<QualNameProxy> for QualName {
+    type Error = &'static str;
+    fn try_from(proxy: QualNameProxy) -> Result<Self, Self::Error> {
+        use html5ever::{Namespace, Prefix};
+        Ok(QualName {
+            prefix: proxy.prefix.map(|s| Prefix::from(s)),
+            ns: Namespace::from(proxy.ns),
+            local: LocalName::from(proxy.local),
+        })
+    }
+}
+
+impl TryFrom<&QualName> for QualNameProxy {
+    type Error = std::convert::Infallible;
+    fn try_from(qual: &QualName) -> Result<Self, Self::Error> {
+        Ok(QualNameProxy {
+            prefix: qual.prefix.as_ref().map(|p| p.to_string()),
+            ns: qual.ns.to_string(),
+            local: qual.local.to_string(),
+        })
+    }
+}
+
+/// An attribute name-value pair
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
+pub struct AttrPair {
+    #[facet(opaque, proxy = QualNameProxy)]
+    pub name: QualName,
+    pub value: Stem,
+}
+
+impl From<(QualName, Stem)> for AttrPair {
+    fn from((name, value): (QualName, Stem)) -> Self {
+        AttrPair { name, value }
+    }
+}
+
+impl From<AttrPair> for (QualName, Stem) {
+    fn from(pair: AttrPair) -> Self {
+        (pair.name, pair.value)
+    }
+}
 
 /// Errors that can occur during diffing or patch application.
 #[derive(Facet, Debug)]
@@ -84,8 +155,9 @@ pub enum NodeRef {
 pub enum InsertContent {
     /// An element with its tag, attributes, and nested children
     Element {
-        tag: Stem,
-        attrs: Vec<(Stem, Stem)>,
+        #[facet(opaque, proxy = LocalNameProxy)]
+        tag: LocalName,
+        attrs: Vec<AttrPair>,
         children: Vec<InsertContent>,
     },
     /// A text node
@@ -98,8 +170,9 @@ pub enum InsertContent {
 /// The vec position determines the final ordering.
 #[derive(Debug, Clone, PartialEq, Eq, facet::Facet)]
 pub struct PropChange {
-    /// The property name (field name)
-    pub name: Stem,
+    /// The property name (QualName for attributes, special name for text like "_text")
+    #[facet(opaque, proxy = QualNameProxy)]
+    pub name: QualName,
     /// The value: None means "keep existing value", Some means "update to this value".
     /// Properties not in the list are implicitly removed.
     pub value: Option<Stem>,
@@ -115,8 +188,9 @@ pub enum Patch {
     /// For Slot(n, Some(NodePath(\[a, b\]))), insert at position b within element at path \[a\] in slot n.
     InsertElement {
         at: NodeRef,
-        tag: Stem,
-        attrs: Vec<(Stem, Stem)>,
+        #[facet(opaque, proxy = LocalNameProxy)]
+        tag: LocalName,
+        attrs: Vec<AttrPair>,
         children: Vec<InsertContent>,
         detach_to_slot: Option<u32>,
     },
@@ -146,12 +220,17 @@ pub enum Patch {
     /// Set attribute on element at path
     SetAttribute {
         path: NodePath,
-        name: Stem,
+        #[facet(opaque, proxy = QualNameProxy)]
+        name: QualName,
         value: Stem,
     },
 
     /// Remove attribute from element at path
-    RemoveAttribute { path: NodePath, name: Stem },
+    RemoveAttribute {
+        path: NodePath,
+        #[facet(opaque, proxy = QualNameProxy)]
+        name: QualName,
+    },
 
     /// Move a node from one location to another.
     Move {
@@ -170,8 +249,9 @@ pub enum Patch {
 /// Node kind in the HTML tree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum HtmlNodeKind {
-    /// An element node with a tag name
-    Element(Stem),
+    /// An element node with a tag name and namespace
+    /// LocalName is interned via string_cache, Namespace distinguishes HTML/SVG/MathML
+    Element(LocalName, Namespace),
     /// A text node
     Text,
     /// A comment node
@@ -181,7 +261,11 @@ pub enum HtmlNodeKind {
 impl std::fmt::Display for HtmlNodeKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HtmlNodeKind::Element(tag) => write!(f, "<{}>", tag),
+            HtmlNodeKind::Element(tag, ns) => match ns {
+                Namespace::Html => write!(f, "<{}>", tag),
+                Namespace::Svg => write!(f, "<svg:{}>", tag),
+                Namespace::MathMl => write!(f, "<math:{}>", tag),
+            },
             HtmlNodeKind::Text => write!(f, "#text"),
             HtmlNodeKind::Comment => write!(f, "#comment"),
         }
@@ -191,17 +275,26 @@ impl std::fmt::Display for HtmlNodeKind {
 /// HTML element properties (attributes + text content).
 #[derive(Debug, Clone, Default)]
 pub struct HtmlProps {
-    /// Attributes - keys and values are atomic Tendril (refcounted + Sync - cheap to clone)
-    /// IndexMap preserves insertion order for consistent serialization
-    #[allow(clippy::mutable_key_type)]
-    pub attrs: IndexMap<Stem, Stem>,
+    /// Attributes - Vec preserves insertion order for consistent serialization
+    /// Keys are QualName (preserves namespace for xlink:href, xml:lang, etc.)
+    pub attrs: Vec<(QualName, Stem)>,
 
     /// Text content (atomic Tendril is refcounted + Sync - cheap to clone)
     pub text: Option<Stem>,
 }
 
+// Special QualName for text content (not a real attribute)
+fn text_key() -> QualName {
+    use html5ever::Namespace;
+    QualName {
+        prefix: None,
+        ns: Namespace::from(""),
+        local: LocalName::from("_text"),
+    }
+}
+
 impl Properties for HtmlProps {
-    type Key = Stem;
+    type Key = QualName;
     type Value = Stem;
 
     #[allow(clippy::mutable_key_type)]
@@ -216,8 +309,8 @@ impl Properties for HtmlProps {
             return 1.0;
         }
 
-        let self_keys: std::collections::HashSet<_> = self.attrs.keys().collect();
-        let other_keys: std::collections::HashSet<_> = other.attrs.keys().collect();
+        let self_keys: std::collections::HashSet<_> = self.attrs.iter().map(|(k, _)| k).collect();
+        let other_keys: std::collections::HashSet<_> = other.attrs.iter().map(|(k, _)| k).collect();
 
         let intersection = self_keys.intersection(&other_keys).count();
         let union = self_keys.len() + other_keys.len();
@@ -235,7 +328,7 @@ impl Properties for HtmlProps {
         // Diff text content - always include if present in final state
         if let Some(text) = &other.text {
             result.push(PropertyInFinalState {
-                key: Stem::from("_text"),
+                key: text_key(),
                 value: if self.text.as_ref() == Some(text) {
                     PropValue::Same
                 } else {
@@ -246,7 +339,7 @@ impl Properties for HtmlProps {
 
         // Include all attributes from the final state in order
         for (key, new_val) in &other.attrs {
-            let old_val = self.attrs.get(key);
+            let old_val = self.attrs.iter().find(|(k, _)| k == key).map(|(_, v)| v);
             result.push(PropertyInFinalState {
                 key: key.clone(),
                 value: if old_val == Some(new_val) {
@@ -280,17 +373,17 @@ pub fn build_tree_from_arena(doc: &Document) -> Tree<HtmlTreeTypes> {
     let body_node = doc.get(body_id);
 
     // Create root as body element
-    let body_tag = if let NodeKind::Element(elem) = &body_node.kind {
-        elem.tag.clone()
+    let (body_tag, body_ns) = if let NodeKind::Element(elem) = &body_node.kind {
+        (elem.tag.clone(), body_node.ns)
     } else {
         panic!("body must be an element");
     };
 
     let root_data = NodeData {
         hash: NodeHash(0),
-        kind: HtmlNodeKind::Element(body_tag),
+        kind: HtmlNodeKind::Element(body_tag, body_ns),
         properties: HtmlProps {
-            attrs: IndexMap::new(),
+            attrs: Vec::new(),
             text: None,
         },
     };
@@ -319,7 +412,7 @@ fn add_arena_children(
         let child_node = doc.get(child_id);
         match &child_node.kind {
             NodeKind::Element(elem) => {
-                let kind = HtmlNodeKind::Element(elem.tag.clone());
+                let kind = HtmlNodeKind::Element(elem.tag.clone(), child_node.ns);
                 let props = HtmlProps {
                     attrs: elem
                         .attrs
@@ -339,7 +432,7 @@ fn add_arena_children(
             NodeKind::Text(text) => {
                 let kind = HtmlNodeKind::Text;
                 let props = HtmlProps {
-                    attrs: IndexMap::new(),
+                    attrs: Vec::new(),
                     text: Some(text.clone().into_send().into()),
                 };
                 let data = NodeData {
@@ -352,7 +445,7 @@ fn add_arena_children(
             NodeKind::Comment(text) => {
                 let kind = HtmlNodeKind::Comment;
                 let props = HtmlProps {
-                    attrs: IndexMap::new(),
+                    attrs: Vec::new(),
                     text: Some(text.clone().into_send().into()),
                 };
                 let data = NodeData {
@@ -647,7 +740,7 @@ impl ShadowTree {
         let _indent = "  ".repeat(depth);
         let data = &self.arena[node].get();
         let _kind_str = match &data.kind {
-            HtmlNodeKind::Element(tag) => format!("<{}>", tag),
+            HtmlNodeKind::Element(tag, _ns) => format!("<{}>", tag),
             HtmlNodeKind::Text => {
                 let text = data.properties.text.as_deref().unwrap_or("");
                 format!("#text({:?})", text.chars().take(20).collect::<String>())
@@ -687,7 +780,7 @@ impl ShadowTree {
                     kind: HtmlNodeKind::Text,
                     properties: HtmlProps {
                         text: Some(Stem::new()),
-                        attrs: IndexMap::new(),
+                        attrs: Vec::new(),
                     },
                 });
                 parent.append(placeholder, &mut self.arena);
@@ -881,7 +974,7 @@ fn convert_ops_with_shadow(
 
                 // Create the patch based on node kind
                 match kind {
-                    HtmlNodeKind::Element(tag) => {
+                    HtmlNodeKind::Element(tag, _ns) => {
                         let (attrs, children) = extract_content_from_tree_b(
                             node_b,
                             tree_b,
@@ -890,7 +983,7 @@ fn convert_ops_with_shadow(
                         );
                         result.push(Patch::InsertElement {
                             at,
-                            tag,
+                            tag: tag.clone(),
                             attrs,
                             children,
                             detach_to_slot,
@@ -1081,7 +1174,7 @@ fn extract_content_from_tree_b(
 
         let child_data = tree_b.get(child_id);
         match &child_data.kind {
-            HtmlNodeKind::Element(tag) => {
+            HtmlNodeKind::Element(tag, _ns) => {
                 let (child_attrs, child_children) = extract_content_from_tree_b(
                     child_id,
                     tree_b,
@@ -1121,7 +1214,7 @@ mod tests {
 
         // Root is body element (build_tree_from_arena uses body as root)
         let root_data = tree.get(tree.root);
-        assert!(matches!(&root_data.kind, HtmlNodeKind::Element(t) if t.as_ref() == "body"));
+        assert!(matches!(&root_data.kind, HtmlNodeKind::Element(t, _) if t.as_ref() == "body"));
 
         // One child (div)
         assert_eq!(tree.child_count(tree.root), 1);
