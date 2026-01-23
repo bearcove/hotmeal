@@ -29,7 +29,7 @@ pub struct Document {
     pub root: NodeId,
 
     /// DOCTYPE if present (usually "html")
-    pub doctype: Option<StrTendril>,
+    pub doctype: Option<Stem>,
 }
 
 impl Document {
@@ -218,15 +218,15 @@ impl Default for Document {
 }
 
 impl Document {
-    /// Serialize to HTML string (body content only, no doctype)
+    /// Serialize to full HTML string including doctype
     pub fn to_html(&self) -> String {
         let mut output = String::new();
-        // Find body element and serialize its children
-        if let Some(body_id) = self.body() {
-            for child_id in body_id.children(&self.arena) {
-                self.serialize_node(&mut output, child_id);
-            }
+        if let Some(ref doctype) = self.doctype {
+            output.push_str("<!DOCTYPE ");
+            output.push_str(doctype.as_ref());
+            output.push('>');
         }
+        self.serialize_node(&mut output, self.root);
         output
     }
 
@@ -572,7 +572,7 @@ impl Document {
         #[allow(unused_variables)]
         for i in children.len()..position {
             let empty_text = self.arena.new_node(NodeData {
-                kind: NodeKind::Text(StrTendril::new()),
+                kind: NodeKind::Text(Stem::new()),
                 ns: Namespace::Html,
             });
             parent_id.append(empty_text, &mut self.arena);
@@ -739,17 +739,17 @@ pub enum NodeKind {
     Document,
     /// Element with tag and attributes
     Element(ElementData),
-    /// Text content (StrTendril is refcounted - cheap to clone)
-    Text(StrTendril),
+    /// Text content (Stem is refcounted - cheap to clone)
+    Text(Stem),
     /// HTML comment
-    Comment(StrTendril),
+    Comment(Stem),
 }
 
 /// Element data (tag + attributes)
 #[derive(Debug, Clone)]
 pub struct ElementData {
-    /// Tag name (StrTendril shares buffer with source via refcounting)
-    pub tag: StrTendril,
+    /// Tag name (Stem shares buffer with source via refcounting)
+    pub tag: Stem,
 
     /// Attributes - IndexMap preserves insertion order for consistent serialization
     #[allow(clippy::mutable_key_type)]
@@ -788,7 +788,7 @@ pub fn parse(html: &str) -> Document {
     let sink = ArenaSink::new();
     // Create a Tendril from our source string
     // html5ever will create subtendrils that share this buffer via refcounting
-    let tendril = StrTendril::from(html);
+    let tendril = Stem::from(html);
     parse_document(sink, Default::default()).one(tendril)
 }
 
@@ -815,7 +815,7 @@ struct ArenaSink {
     document: NodeId,
 
     /// DOCTYPE encountered during parse - wrapped in RefCell
-    doctype: RefCell<Option<StrTendril>>,
+    doctype: RefCell<Option<Stem>>,
 }
 
 impl ArenaSink {
@@ -911,18 +911,12 @@ impl TreeSink for ArenaSink {
         attrs: Vec<Attribute>,
         _flags: ElementFlags,
     ) -> Self::Handle {
-        // Convert tag name to StrTendril
-        let tag = StrTendril::from(name.local.as_ref());
+        let tag = Stem::from(name.local.as_ref());
         let ns = Namespace::from_url(name.ns.as_ref());
 
-        // Convert attributes - IndexMap preserves insertion order from HTML
         let attr_map: IndexMap<_, _> = attrs
             .into_iter()
-            .map(|attr| {
-                let key = Stem::from(attr.name.local.as_ref());
-                let value = attr.value.clone(); // StrTendril clone is cheap (refcounted)
-                (key, value)
-            })
+            .map(|attr| (Stem::from(attr.name.local.as_ref()), attr.value))
             .collect();
 
         // Create node in arena
@@ -945,7 +939,7 @@ impl TreeSink for ArenaSink {
     fn create_pi(&self, _target: StrTendril, _data: StrTendril) -> Self::Handle {
         // Processing instructions - create empty comment
         self.arena.borrow_mut().new_node(NodeData {
-            kind: NodeKind::Comment(StrTendril::new()),
+            kind: NodeKind::Comment(Stem::new()),
             ns: Namespace::Html,
         })
     }
@@ -970,7 +964,6 @@ impl TreeSink for ArenaSink {
                     }
                 }
 
-                // Create new text node (StrTendril clone is cheap - refcounted)
                 let text_node = arena.new_node(NodeData {
                     kind: NodeKind::Text(text),
                     ns: Namespace::Html,
@@ -1084,7 +1077,6 @@ mod tests {
         let text_data = doc.get(text);
         if let NodeKind::Text(t) = &text_data.kind {
             assert_eq!(t.as_ref(), "Hello");
-            // StrTendril shares buffers via refcounting (cheap clone)
         }
     }
 
@@ -1214,10 +1206,12 @@ mod tests {
 
     #[test]
     fn test_to_html() {
-        // Use div instead of p to avoid auto-closing weirdness
         let html = "<html><body><div>Hello</div></body></html>";
         let doc = parse(html);
-        assert_eq!(doc.to_html(), "<div>Hello</div>");
+        assert_eq!(
+            doc.to_html(),
+            "<html><head></head><body><div>Hello</div></body></html>"
+        );
     }
 
     #[test]
@@ -1225,7 +1219,8 @@ mod tests {
         let html = r#"<html><body><div class="container" id="main">Content</div></body></html>"#;
         let doc = parse(html);
         let output = doc.to_html();
-        // Note: attribute order is nondeterministic due to HashMap
+        assert!(output.contains("<html>"));
+        assert!(output.contains("<body>"));
         assert!(output.contains("<div"));
         assert!(output.contains("class=\"container\""));
         assert!(output.contains("id=\"main\""));
@@ -1236,7 +1231,10 @@ mod tests {
     fn test_to_html_escaping() {
         let html = "<html><body><div>&lt;script&gt; &amp; \"quotes\"</div></body></html>";
         let doc = parse(html);
-        assert_eq!(doc.to_html(), "<div>&lt;script&gt; &amp; \"quotes\"</div>");
+        assert_eq!(
+            doc.to_html(),
+            "<html><head></head><body><div>&lt;script&gt; &amp; \"quotes\"</div></body></html>"
+        );
     }
 
     #[test]
@@ -1244,6 +1242,7 @@ mod tests {
         let html = "<html><body><br><img src=\"test.png\"></body></html>";
         let doc = parse(html);
         let output = doc.to_html();
+        assert!(output.contains("<html>"));
         assert!(output.contains("<br>"));
         assert!(output.contains("<img"));
         assert!(output.contains("src=\"test.png\">"));

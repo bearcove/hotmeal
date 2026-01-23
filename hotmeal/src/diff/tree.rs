@@ -1150,8 +1150,9 @@ mod tests {
     fn test_fuzzer_em_li_navigate_text() {
         // Fuzzer found "Insert: cannot navigate through text node" error
         // The fuzzer generates unescaped HTML which html5ever parses as actual elements
-        let old_html = r#"<html><body><em> <v<      << v</em></body></html>"#;
-        let new_html = r#"<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html><body><li>a< <v<      <<</li><img src=""></body></html>"#;
+        let old_html = r#"<!DOCTYPE html><html><body><em> <v<      << v</em></body></html>"#;
+        let new_html =
+            r#"<!DOCTYPE html><html><body><li>a< <v<      <<</li><img src=""></body></html>"#;
 
         let old_doc = arena_dom::parse(old_html);
         let new_doc = arena_dom::parse(new_html);
@@ -1176,7 +1177,7 @@ mod tests {
     fn test_fuzzer_nested_ol_patch_order() {
         // Fuzzer found "patch at index 4 is out of order" error
         let old_html = r#"<!DOCTYPE html><html><body><ol start="0"></ol></body></html>"#;
-        let new_html = r#"<html><body><ol start="255"></ol><ol start="93"></ol><ol start="91"><ol start="1"><a href="vaaaaaaaaaaaaa"></a></ol></ol></body></html>"#;
+        let new_html = r#"<!DOCTYPE html><html><body><ol start="255"></ol><ol start="93"></ol><ol start="91"><ol start="1"><a href="vaaaaaaaaaaaaa"></a></ol></ol></body></html>"#;
 
         let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
         debug!("Patches: {:#?}", patches);

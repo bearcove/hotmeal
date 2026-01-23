@@ -26,7 +26,7 @@ fn hot_reload_small(bencher: Bencher) {
         let mut old = hotmeal::arena_dom::parse(black_box(SMALL_HTML));
         let new = hotmeal::arena_dom::parse(black_box(&modified));
         let patches = hotmeal::diff::diff(&old, &new).unwrap();
-        old.apply_patches(&patches).unwrap();
+        old.apply_patches(patches).unwrap();
         black_box(old);
     });
 }
@@ -38,7 +38,7 @@ fn hot_reload_medium(bencher: Bencher) {
         let mut old = hotmeal::arena_dom::parse(black_box(MEDIUM_HTML));
         let new = hotmeal::arena_dom::parse(black_box(&modified));
         let patches = hotmeal::diff::diff(&old, &new).unwrap();
-        old.apply_patches(&patches).unwrap();
+        old.apply_patches(patches).unwrap();
         black_box(old);
     });
 }
@@ -50,7 +50,7 @@ fn hot_reload_large(bencher: Bencher) {
         let mut old = hotmeal::arena_dom::parse(black_box(LARGE_HTML));
         let new = hotmeal::arena_dom::parse(black_box(&modified));
         let patches = hotmeal::diff::diff(&old, &new).unwrap();
-        old.apply_patches(&patches).unwrap();
+        old.apply_patches(patches).unwrap();
         black_box(old);
     });
 }
@@ -62,7 +62,7 @@ fn hot_reload_xlarge(bencher: Bencher) {
         let mut old = hotmeal::arena_dom::parse(black_box(XLARGE_HTML));
         let new = hotmeal::arena_dom::parse(black_box(&modified));
         let patches = hotmeal::diff::diff(&old, &new).unwrap();
-        old.apply_patches(&patches).unwrap();
+        old.apply_patches(patches).unwrap();
         black_box(old);
     });
 }

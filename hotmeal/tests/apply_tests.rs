@@ -8,19 +8,24 @@ use hotmeal::diff::{InsertContent, NodePath, NodeRef, Patch};
 #[test]
 fn test_parse_and_serialize_roundtrip() {
     let node = parse("<html><body><p>Hello</p></body></html>");
-    assert_eq!(node.to_html(), "<body><p>Hello</p></body>");
+    assert_eq!(
+        node.to_html(),
+        "<html><head></head><body><p>Hello</p></body></html>"
+    );
 }
 
 #[test]
 fn test_apply_set_text() {
-    // Body has <p>Hello</p>, the text "Hello" is at path [0, 0] (p's first child)
     let mut node = parse("<html><body><p>Hello</p></body></html>");
     node.apply_patches(vec![Patch::SetText {
-        path: NodePath(vec![0, 0]), // path to the text node inside <p>
+        path: NodePath(vec![0, 0]),
         text: Stem::from("Goodbye"),
     }])
     .unwrap();
-    assert_eq!(node.to_html(), "<body><p>Goodbye</p></body>");
+    assert_eq!(
+        node.to_html(),
+        "<html><head></head><body><p>Goodbye</p></body></html>"
+    );
 }
 
 #[test]
@@ -34,7 +39,7 @@ fn test_apply_set_attribute() {
     .unwrap();
     assert_eq!(
         node.to_html(),
-        "<body><div class=\"highlight\">Content</div></body>"
+        "<html><head></head><body><div class=\"highlight\">Content</div></body></html>"
     );
 }
 
@@ -45,7 +50,10 @@ fn test_apply_remove() {
         node: NodeRef::Path(NodePath(vec![1])),
     }])
     .unwrap();
-    assert_eq!(node.to_html(), "<body><p>First</p></body>");
+    assert_eq!(
+        node.to_html(),
+        "<html><head></head><body><p>First</p></body></html>"
+    );
 }
 
 #[test]
@@ -56,16 +64,17 @@ fn test_apply_insert_element() {
         tag: Stem::from("p"),
         attrs: vec![],
         children: vec![],
-        detach_to_slot: Some(0), // Chawathe: displace First to slot 0
+        detach_to_slot: Some(0),
     }])
     .unwrap();
-    // After insert with displacement, First is in slot 0, only empty <p> is in tree
-    assert_eq!(node.to_html(), "<body><p></p></body>");
+    assert_eq!(
+        node.to_html(),
+        "<html><head></head><body><p></p></body></html>"
+    );
 }
 
 #[test]
 fn test_apply_insert_element_no_displacement() {
-    // Insert at end (no occupant) - no displacement needed
     let mut node = parse("<html><body><p>First</p></body></html>");
     node.apply_patches(vec![Patch::InsertElement {
         at: NodeRef::Path(NodePath(vec![1])),
@@ -75,12 +84,14 @@ fn test_apply_insert_element_no_displacement() {
         detach_to_slot: None,
     }])
     .unwrap();
-    assert_eq!(node.to_html(), "<body><p>First</p><p></p></body>");
+    assert_eq!(
+        node.to_html(),
+        "<html><head></head><body><p>First</p><p></p></body></html>"
+    );
 }
 
 #[test]
 fn test_apply_insert_element_with_children() {
-    // Insert element with text content
     let mut node = parse("<html><body><p>First</p></body></html>");
     node.apply_patches(vec![Patch::InsertElement {
         at: NodeRef::Path(NodePath(vec![1])),
@@ -90,12 +101,14 @@ fn test_apply_insert_element_with_children() {
         detach_to_slot: None,
     }])
     .unwrap();
-    assert_eq!(node.to_html(), "<body><p>First</p><p>Second</p></body>");
+    assert_eq!(
+        node.to_html(),
+        "<html><head></head><body><p>First</p><p>Second</p></body></html>"
+    );
 }
 
 #[test]
 fn test_apply_insert_element_with_attrs() {
-    // Insert element with attribute
     let mut node = parse("<html><body><p>First</p></body></html>");
     node.apply_patches(vec![Patch::InsertElement {
         at: NodeRef::Path(NodePath(vec![1])),
@@ -107,7 +120,7 @@ fn test_apply_insert_element_with_attrs() {
     .unwrap();
     assert_eq!(
         node.to_html(),
-        "<body><p>First</p><p class=\"highlight\">Second</p></body>"
+        "<html><head></head><body><p>First</p><p class=\"highlight\">Second</p></body></html>"
     );
 }
 
@@ -120,28 +133,26 @@ fn test_apply_insert_text() {
         detach_to_slot: None,
     }])
     .unwrap();
-    assert_eq!(node.to_html(), "<body><p>First</p>Hello</body>");
+    assert_eq!(
+        node.to_html(),
+        "<html><head></head><body><p>First</p>Hello</body></html>"
+    );
 }
 
 #[test]
 fn test_parse_invalid_html_nesting() {
-    // This HTML has a <div> inside a <strong> which is invalid per HTML spec
-    // (block element inside inline element), but our arena_dom should handle it fine.
     let html = r#"<html><body><strong><div>nested div</div></strong></body></html>"#;
     let doc = parse(html);
 
-    // Verify the structure is preserved
     let body = doc.body().expect("should have body");
     let strong = doc.first_child(body).expect("body should have children");
 
-    // Check strong tag
     if let hotmeal::arena_dom::NodeKind::Element(elem) = &doc.get(strong).kind {
         assert_eq!(elem.tag.as_ref(), "strong");
     } else {
         panic!("Expected element, got {:?}", doc.get(strong).kind);
     }
 
-    // Check div inside strong
     let div = doc
         .first_child(strong)
         .expect("strong should have children");
@@ -151,7 +162,6 @@ fn test_parse_invalid_html_nesting() {
         panic!("Expected div element, got {:?}", doc.get(div).kind);
     }
 
-    // Check text content
     let text_node = doc.first_child(div).expect("div should have text");
     if let hotmeal::arena_dom::NodeKind::Text(text) = &doc.get(text_node).kind {
         assert_eq!(text.as_ref(), "nested div");
