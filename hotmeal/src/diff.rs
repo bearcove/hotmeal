@@ -385,6 +385,8 @@ struct DiffNodeData {
     kind: HtmlNodeKind,
     props: HtmlProps,
     height: usize,
+    /// Cached position among siblings (0-indexed)
+    position: usize,
 }
 
 /// A wrapper around Document that implements DiffTree.
@@ -448,9 +450,19 @@ impl<'a> DiffableDocument<'a> {
                     hash: NodeHash(0), // Will be computed in second pass
                     kind,
                     props,
-                    height: 0, // Will be computed in second pass
+                    height: 0,   // Will be computed in second pass
+                    position: 0, // Will be computed below
                 },
             );
+        }
+
+        // Compute positions: iterate each parent's children and assign positions
+        for node_id in body_id.descendants(&doc.arena) {
+            for (pos, child_id) in node_id.children(&doc.arena).enumerate() {
+                if let Some(data) = nodes.get_mut(&child_id) {
+                    data.position = pos;
+                }
+            }
         }
 
         // Second pass: compute heights and hashes bottom-up (post-order)
@@ -542,18 +554,8 @@ impl DiffTree for DiffableDocument<'_> {
     }
 
     fn position(&self, id: NodeId) -> usize {
-        cinereus::tree::POSITION_CALLS.with(|c| c.set(c.get() + 1));
-        if let Some(parent) = self.parent(id) {
-            for (pos, c) in parent.children(&self.doc.arena).enumerate() {
-                cinereus::tree::SIBLINGS_SCANNED.with(|s| s.set(s.get() + 1));
-                if c == id {
-                    return pos;
-                }
-            }
-            0
-        } else {
-            0
-        }
+        // O(1) lookup from cached position
+        self.nodes.get(&id).map(|d| d.position).unwrap_or(0)
     }
 
     fn height(&self, id: NodeId) -> usize {
