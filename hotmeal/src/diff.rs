@@ -16,6 +16,7 @@ use facet::Facet;
 use html5ever::{LocalName, QualName};
 use rapidhash::RapidHasher;
 use smallvec::SmallVec;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
@@ -385,8 +386,8 @@ struct DiffNodeData {
     kind: HtmlNodeKind,
     props: HtmlProps,
     height: usize,
-    /// Cached position among siblings (0-indexed)
-    position: usize,
+    /// Cached position among siblings (0-indexed), computed on-demand
+    position: Cell<Option<u32>>,
 }
 
 /// A wrapper around Document that implements DiffTree.
@@ -450,19 +451,10 @@ impl<'a> DiffableDocument<'a> {
                     hash: NodeHash(0), // Will be computed in second pass
                     kind,
                     props,
-                    height: 0,   // Will be computed in second pass
-                    position: 0, // Will be computed below
+                    height: 0,                 // Will be computed in second pass
+                    position: Cell::new(None), // Computed on-demand
                 },
             );
-        }
-
-        // Compute positions: iterate each parent's children and assign positions
-        for node_id in body_id.descendants(&doc.arena) {
-            for (pos, child_id) in node_id.children(&doc.arena).enumerate() {
-                if let Some(data) = nodes.get_mut(&child_id) {
-                    data.position = pos;
-                }
-            }
         }
 
         // Second pass: compute heights and hashes bottom-up (post-order)
@@ -554,8 +546,25 @@ impl DiffTree for DiffableDocument<'_> {
     }
 
     fn position(&self, id: NodeId) -> usize {
-        // O(1) lookup from cached position
-        self.nodes.get(&id).map(|d| d.position).unwrap_or(0)
+        if let Some(data) = self.nodes.get(&id) {
+            // Check cache first
+            if let Some(pos) = data.position.get() {
+                return pos as usize;
+            }
+            // Compute and cache
+            let pos = if let Some(parent) = self.parent(id) {
+                parent
+                    .children(&self.doc.arena)
+                    .position(|c| c == id)
+                    .unwrap_or(0) as u32
+            } else {
+                0
+            };
+            data.position.set(Some(pos));
+            pos as usize
+        } else {
+            0
+        }
     }
 
     fn height(&self, id: NodeId) -> usize {
