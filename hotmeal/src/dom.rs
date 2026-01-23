@@ -965,11 +965,11 @@ impl<'a> TreeSink for ArenaSink<'a> {
                 // Try to merge with previous text node (html5ever behavior)
                 let last_child_id = parent.children(&arena).next_back();
 
-                if let Some(last_child) = last_child_id {
-                    if let NodeKind::Text(existing) = &mut arena[last_child].get_mut().kind {
-                        existing.push_tendril(&text);
-                        return;
-                    }
+                if let Some(last_child) = last_child_id
+                    && let NodeKind::Text(existing) = &mut arena[last_child].get_mut().kind
+                {
+                    existing.push_tendril(&text);
+                    return;
                 }
 
                 // Can't use self.tendril_to_stem here because we have arena borrowed
