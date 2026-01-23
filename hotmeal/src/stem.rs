@@ -12,7 +12,7 @@ use tendril::StrTendril;
 ///
 /// Can be either borrowed (zero-copy from input) or owned (after mutation).
 #[derive(Clone, Facet)]
-#[facet(transparent)]
+#[facet(cow)]
 #[repr(u8)]
 pub enum Stem<'a> {
     Borrowed(&'a str),
