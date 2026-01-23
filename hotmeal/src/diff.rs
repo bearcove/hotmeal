@@ -855,9 +855,36 @@ impl ShadowTree {
                 None
             }
         } else {
-            debug!("Move: appending (no occupant)");
-            new_parent.append(node, &mut self.arena);
-            None
+            // Fill gaps with placeholder text nodes (per Chawathe semantics)
+            while new_parent.children(&self.arena).count() < position {
+                let placeholder = self.arena.new_node(NodeData {
+                    hash: NodeHash(0),
+                    kind: HtmlNodeKind::Text,
+                    properties: HtmlProps {
+                        text: Some(Stem::new()),
+                        attrs: Vec::new(),
+                    },
+                });
+                new_parent.append(placeholder, &mut self.arena);
+            }
+
+            // Re-check after filling gaps
+            let current_children: Vec<_> = new_parent.children(&self.arena).collect();
+            if position < current_children.len() {
+                let occupant = current_children[position];
+                if occupant != node {
+                    occupant.insert_before(node, &mut self.arena);
+                    let slot = self.detach_to_slot(occupant);
+                    debug!(?occupant, slot, "Move: detached gap-filler to slot");
+                    Some(slot)
+                } else {
+                    None
+                }
+            } else {
+                debug!("Move: appending (no occupant)");
+                new_parent.append(node, &mut self.arena);
+                None
+            }
         }
     }
 }
