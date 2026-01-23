@@ -230,6 +230,14 @@ impl Document {
         output
     }
 
+    /// Serialize to HTML string without the doctype declaration.
+    /// Useful for comparing DOM structure when doctype differences should be ignored.
+    pub fn to_html_without_doctype(&self) -> String {
+        let mut output = String::new();
+        self.serialize_node(&mut output, self.root);
+        output
+    }
+
     /// Navigate to a node by path starting from body.
     /// Returns the NodeId at the given path.
     fn navigate_path(&self, path: &[usize]) -> Result<NodeId, DiffError> {
