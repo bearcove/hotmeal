@@ -16,8 +16,9 @@ fn test_parse_and_serialize_roundtrip() {
 #[test]
 fn test_apply_set_text() {
     let mut node = parse("<html><body><p>Hello</p></body></html>");
+    // Path: [slot=0, p=0, text=0] - first child of body is p, first child of p is text
     node.apply_patches(vec![Patch::SetText {
-        path: NodePath(vec![0, 0]),
+        path: NodePath(vec![0, 0, 0]),
         text: Stem::from("Goodbye"),
     }])
     .unwrap();
@@ -30,8 +31,9 @@ fn test_apply_set_text() {
 #[test]
 fn test_apply_set_attribute() {
     let mut node = parse("<html><body><div>Content</div></body></html>");
+    // Path: [slot=0, div=0] - first child of body is the div
     node.apply_patches(vec![Patch::SetAttribute {
-        path: NodePath(vec![0]),
+        path: NodePath(vec![0, 0]),
         name: QualName::new(None, ns!(), local_name!("class")),
         value: Stem::from("highlight"),
     }])
@@ -45,8 +47,9 @@ fn test_apply_set_attribute() {
 #[test]
 fn test_apply_remove() {
     let mut node = parse("<html><body><p>First</p><p>Second</p></body></html>");
+    // Path: [slot=0, position=1] - remove second child of body
     node.apply_patches(vec![Patch::Remove {
-        node: NodeRef::Path(NodePath(vec![1])),
+        node: NodeRef(NodePath(vec![0, 1])),
     }])
     .unwrap();
     assert_eq!(
@@ -58,12 +61,13 @@ fn test_apply_remove() {
 #[test]
 fn test_apply_insert_element() {
     let mut node = parse("<html><body><p>First</p></body></html>");
+    // Path: [slot=0, position=0] - insert at first position in body, displacing to slot 1
     node.apply_patches(vec![Patch::InsertElement {
-        at: NodeRef::Path(NodePath(vec![0])),
+        at: NodeRef(NodePath(vec![0, 0])),
         tag: LocalName::from("p"),
         attrs: vec![],
         children: vec![],
-        detach_to_slot: Some(0),
+        detach_to_slot: Some(1),
     }])
     .unwrap();
     assert_eq!(
@@ -75,8 +79,9 @@ fn test_apply_insert_element() {
 #[test]
 fn test_apply_insert_element_no_displacement() {
     let mut node = parse("<html><body><p>First</p></body></html>");
+    // Path: [slot=0, position=1] - insert at second position (no displacement)
     node.apply_patches(vec![Patch::InsertElement {
-        at: NodeRef::Path(NodePath(vec![1])),
+        at: NodeRef(NodePath(vec![0, 1])),
         tag: LocalName::from("p"),
         attrs: vec![],
         children: vec![],
@@ -92,8 +97,9 @@ fn test_apply_insert_element_no_displacement() {
 #[test]
 fn test_apply_insert_element_with_children() {
     let mut node = parse("<html><body><p>First</p></body></html>");
+    // Path: [slot=0, position=1] - insert at second position
     node.apply_patches(vec![Patch::InsertElement {
-        at: NodeRef::Path(NodePath(vec![1])),
+        at: NodeRef(NodePath(vec![0, 1])),
         tag: LocalName::from("p"),
         attrs: vec![],
         children: vec![InsertContent::Text(Stem::from("Second"))],
@@ -109,8 +115,9 @@ fn test_apply_insert_element_with_children() {
 #[test]
 fn test_apply_insert_element_with_attrs() {
     let mut node = parse("<html><body><p>First</p></body></html>");
+    // Path: [slot=0, position=1] - insert at second position
     node.apply_patches(vec![Patch::InsertElement {
-        at: NodeRef::Path(NodePath(vec![1])),
+        at: NodeRef(NodePath(vec![0, 1])),
         tag: LocalName::from("p"),
         attrs: vec![AttrPair {
             name: QualName::new(None, ns!(), local_name!("class")),
@@ -129,8 +136,9 @@ fn test_apply_insert_element_with_attrs() {
 #[test]
 fn test_apply_insert_text() {
     let mut node = parse("<html><body><p>First</p></body></html>");
+    // Path: [slot=0, position=1] - insert text at second position
     node.apply_patches(vec![Patch::InsertText {
-        at: NodeRef::Path(NodePath(vec![1])),
+        at: NodeRef(NodePath(vec![0, 1])),
         text: Stem::from("Hello"),
         detach_to_slot: None,
     }])

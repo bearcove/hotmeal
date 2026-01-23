@@ -163,15 +163,17 @@ impl std::fmt::Display for NodePath {
     }
 }
 
-/// Reference to a node - either by path or by slot number.
+/// Reference to a node via a path.
+///
+/// The first element of the path is always the slot number:
+/// - `[0, 1, 2]` = slot 0 (main tree), child 1, child 2
+/// - `[1, 0, 3]` = slot 1 (displaced content), child 0, child 3
+///
+/// Slot 0 is special - it always contains the original tree (body).
+/// Slots 1+ are created when content is displaced during Insert/Move operations.
 #[derive(Debug, Clone, PartialEq, Eq, facet::Facet)]
-#[repr(u8)]
-pub enum NodeRef {
-    /// Node at a path in the DOM
-    Path(NodePath),
-    /// Node in a slot (previously detached).
-    Slot(u32, Option<NodePath>),
-}
+#[facet(transparent)]
+pub struct NodeRef(pub NodePath);
 
 /// Content that can be inserted as part of a new subtree.
 #[derive(Debug, Clone, PartialEq, Eq, facet::Facet)]
@@ -206,9 +208,8 @@ pub struct PropChange {
 #[repr(u8)]
 pub enum Patch {
     /// Insert an element at a position.
-    /// The `at` NodeRef includes the position as the last path segment.
-    /// For Path(NodePath(\[a, b, c\])), insert at position c within parent at path \[a, b\].
-    /// For Slot(n, Some(NodePath(\[a, b\]))), insert at position b within element at path \[a\] in slot n.
+    /// The `at` NodeRef path includes the position as the last segment.
+    /// Path `[slot, a, b, c]` means: in slot, navigate to a, then b, then insert at position c.
     InsertElement {
         at: NodeRef,
         #[facet(opaque, proxy = LocalNameProxy)]
@@ -219,7 +220,6 @@ pub enum Patch {
     },
 
     /// Insert a text node at a position.
-    /// The `at` NodeRef includes the position as the last path segment.
     InsertText {
         at: NodeRef,
         text: Stem,
@@ -227,7 +227,6 @@ pub enum Patch {
     },
 
     /// Insert a comment node at a position.
-    /// The `at` NodeRef includes the position as the last path segment.
     InsertComment {
         at: NodeRef,
         text: Stem,
@@ -572,68 +571,93 @@ pub fn diff(old: &Document, new: &Document) -> Result<Vec<Patch>, DiffError> {
     convert_ops_with_shadow(edit_ops, &tree_a, &tree_b, &matching)
 }
 
-/// Encapsulates the shadow tree and its detached nodes (slots).
+/// Encapsulates the shadow tree with slot-based path computation.
 ///
-/// This prevents bugs where we forget to check if a node is detached.
-/// All node reference queries go through this type, which automatically
-/// handles both in-tree and detached node cases.
+/// The arena has a "super root" whose children are slot nodes:
+/// - Slot 0: The original tree (body element)
+/// - Slot 1+: Displaced content from Insert/Move operations
+///
+/// All paths start with the slot number: [0, 1, 2] means slot 0, child 1, child 2.
+/// This eliminates the need for separate tracking of detached nodes.
 struct ShadowTree {
     arena: indextree::Arena<NodeData<HtmlTreeTypes>>,
-    root: NodeId,
-    /// Maps NodeId to slot number for nodes that have been detached
-    detached_nodes: HashMap<NodeId, u32>,
+    /// The super root - its children are slot nodes
+    super_root: NodeId,
+    /// Number of slots (slot 0 always exists, created in new())
     next_slot: u32,
 }
 
 impl ShadowTree {
-    fn new(arena: indextree::Arena<NodeData<HtmlTreeTypes>>, root: NodeId) -> Self {
+    fn new(mut arena: indextree::Arena<NodeData<HtmlTreeTypes>>, original_root: NodeId) -> Self {
+        // Create the super root (a meta node, not a real DOM node)
+        let super_root = arena.new_node(NodeData {
+            hash: NodeHash(0),
+            kind: HtmlNodeKind::Comment, // Just a marker, not used
+            properties: HtmlProps::default(),
+        });
+
+        // Create slot 0 and reparent the original tree under it
+        let slot0 = arena.new_node(NodeData {
+            hash: NodeHash(0),
+            kind: HtmlNodeKind::Comment, // Slot marker
+            properties: HtmlProps::default(),
+        });
+        super_root.append(slot0, &mut arena);
+
+        // Move original_root under slot 0
+        original_root.detach(&mut arena);
+        slot0.append(original_root, &mut arena);
+
         Self {
             arena,
-            root,
-            detached_nodes: HashMap::new(),
-            next_slot: 0,
+            super_root,
+            next_slot: 1, // Slot 0 already exists
         }
     }
 
-    /// Get a NodeRef for any node - automatically checks if detached.
-    /// This is the KEY method that prevents "forgot to check detached" bugs!
-    fn get_node_ref(&self, node: NodeId) -> NodeRef {
-        // Check if directly detached
-        if let Some(&slot) = self.detached_nodes.get(&node) {
-            debug!(?node, slot, "get_node_ref: node is directly in slot");
-            return NodeRef::Slot(slot, None);
-        }
-
-        // Check if ancestor is detached
-        if let Some((slot, rel_path)) = self.find_detached_ancestor(node) {
-            debug!(
-                ?node,
-                slot,
-                ?rel_path,
-                "get_node_ref: node has detached ancestor"
-            );
-            // Check what's actually in the slot
-            if let Some((slot_node, _)) = self.detached_nodes.iter().find(|(_, s)| **s == slot) {
-                #[allow(unused_variables)]
-                let slot_data = &self.arena[*slot_node].get();
-                debug!(?slot_node, kind = ?slot_data.kind, "get_node_ref: slot contains");
-            }
-            return NodeRef::Slot(slot, rel_path);
-        }
-
-        // Node is in tree - compute path
-        let path = self.compute_path(node);
-        debug!(?node, ?path, "get_node_ref: node is in tree at path");
-        NodeRef::Path(NodePath(path))
+    /// Get the slot node for a given slot number.
+    fn get_slot(&self, slot: u32) -> Option<NodeId> {
+        self.super_root.children(&self.arena).nth(slot as usize)
     }
 
-    /// Compute path for a node in the tree.
+    /// Get the content root for slot 0 (the original tree root, e.g., body).
+    fn slot0_content(&self) -> NodeId {
+        let slot0 = self.get_slot(0).expect("slot 0 must exist");
+        slot0
+            .children(&self.arena)
+            .next()
+            .expect("slot 0 must have content")
+    }
+
+    /// Compute the full path for any node. The first element is always the slot number.
+    ///
+    /// For a node at super_root → slot0 → body → div → text, the path is `[0, 0, 0]`:
+    /// - slot number 0
+    /// - div is child 0 of body (the slot content root)
+    /// - text is child 0 of div
+    ///
+    /// Note: The slot content root's position within the slot node is NOT included.
     fn compute_path(&self, node: NodeId) -> Vec<usize> {
         let mut path = Vec::new();
         let mut current = node;
 
-        while current != self.root {
+        loop {
             if let Some(parent_id) = self.arena.get(current).and_then(|n| n.parent()) {
+                // Check if parent is a slot node (grandparent is super_root)
+                let grandparent = self.arena.get(parent_id).and_then(|n| n.parent());
+                if grandparent == Some(self.super_root) {
+                    // parent_id is a slot node, current is the slot content root (e.g., body)
+                    // Get the slot number and stop - don't include current's position
+                    let slot = self
+                        .super_root
+                        .children(&self.arena)
+                        .position(|c| c == parent_id)
+                        .unwrap_or(0);
+                    path.push(slot);
+                    break;
+                }
+
+                // Normal case: add position and continue up
                 let position = parent_id
                     .children(&self.arena)
                     .position(|c| c == current)
@@ -641,6 +665,7 @@ impl ShadowTree {
                 path.push(position);
                 current = parent_id;
             } else {
+                // Orphaned node - shouldn't happen
                 break;
             }
         }
@@ -649,73 +674,46 @@ impl ShadowTree {
         path
     }
 
-    /// Find if any ancestor of this node is detached, returning (slot, relative_path).
-    fn find_detached_ancestor(&self, node: NodeId) -> Option<(u32, Option<NodePath>)> {
-        let mut current = node;
-        let mut traversal: Vec<(NodeId, NodeId)> = Vec::new();
-
-        debug!(
-            ?node,
-            detached_count = self.detached_nodes.len(),
-            "find_detached_ancestor: starting search"
-        );
-
-        loop {
-            debug!(?current, "find_detached_ancestor: checking node");
-
-            // Check if current node is detached
-            if let Some(&slot) = self.detached_nodes.get(&current) {
-                debug!(
-                    ?current,
-                    slot, "find_detached_ancestor: found detached ancestor"
-                );
-
-                // Build the relative path from slot root to the original node
-                let relative_path = if traversal.is_empty() {
-                    None // Node is directly the slot root
-                } else {
-                    // Compute relative path by position indices
-                    let mut path_indices: Vec<usize> = Vec::new();
-                    for (child, parent) in traversal.iter().rev() {
-                        let pos = parent
-                            .children(&self.arena)
-                            .position(|c| c == *child)
-                            .unwrap_or(0);
-                        path_indices.push(pos);
-                    }
-                    Some(NodePath(path_indices))
-                };
-                return Some((slot, relative_path));
-            }
-
-            // Move to parent
-            if let Some(parent_id) = self.arena.get(current).and_then(|n| n.parent()) {
-                debug!(
-                    ?current,
-                    ?parent_id,
-                    "find_detached_ancestor: moving to parent"
-                );
-                traversal.push((current, parent_id));
-                current = parent_id;
-            } else {
-                debug!(
-                    ?current,
-                    "find_detached_ancestor: no more parents, returning None"
-                );
-                break;
-            }
-        }
-        None
+    /// Get a NodeRef for any node.
+    fn get_node_ref(&self, node: NodeId) -> NodeRef {
+        let path = self.compute_path(node);
+        debug!(?node, ?path, "get_node_ref: computed path");
+        NodeRef(NodePath(path))
     }
 
-    /// Detach a node to a slot, returning the slot number.
-    fn detach_to_slot(&mut self, node: NodeId) -> u32 {
-        let slot = self.next_slot;
+    /// Get a NodeRef with a specific position appended (for insert/move targets).
+    fn get_node_ref_with_position(&self, parent: NodeId, position: usize) -> NodeRef {
+        let mut path = self.compute_path(parent);
+        path.push(position);
+        NodeRef(NodePath(path))
+    }
+
+    /// Create a new slot and return its number.
+    fn create_slot(&mut self) -> u32 {
+        let slot_num = self.next_slot;
         self.next_slot += 1;
+
+        let slot_node = self.arena.new_node(NodeData {
+            hash: NodeHash(0),
+            kind: HtmlNodeKind::Comment, // Slot marker
+            properties: HtmlProps::default(),
+        });
+        self.super_root.append(slot_node, &mut self.arena);
+
+        debug!(slot_num, "created new slot");
+        slot_num
+    }
+
+    /// Detach a node to a new slot, returning the slot number.
+    fn detach_to_slot(&mut self, node: NodeId) -> u32 {
+        let slot_num = self.create_slot();
+        let slot_node = self.get_slot(slot_num).expect("just created");
+
         node.detach(&mut self.arena);
-        self.detached_nodes.insert(node, slot);
-        debug!(?node, slot, "detached node to slot");
-        slot
+        slot_node.append(node, &mut self.arena);
+
+        debug!(?node, slot_num, "detached node to slot");
+        slot_num
     }
 
     /// Detach a node with a placeholder to prevent sibling shifts.
@@ -729,21 +727,14 @@ impl ShadowTree {
         node.detach(&mut self.arena);
     }
 
-    /// Remove a node from detached tracking (when it's removed from a slot).
-    fn remove_from_detached(&mut self, node: NodeId) {
-        self.detached_nodes.remove(&node);
-    }
-
     /// Pretty-print the shadow tree for debugging.
     #[allow(dead_code)]
     fn debug_print_tree(&self, _title: &str) {
         debug!("=== {} ===", _title);
-        self.debug_print_node(self.root, 0);
-        if !self.detached_nodes.is_empty() {
-            debug!("Detached nodes:");
-            for (&node, &_slot) in &self.detached_nodes {
-                debug!("  Slot {}: {:?}", _slot, node);
-                self.debug_print_node(node, 2);
+        for (slot_num, slot_node) in self.super_root.children(&self.arena).enumerate() {
+            debug!("Slot {}:", slot_num);
+            for content in slot_node.children(&self.arena) {
+                self.debug_print_node(content, 1);
             }
         }
         debug!("===");
@@ -821,12 +812,18 @@ impl ShadowTree {
         new_parent: NodeId,
         position: usize,
     ) -> Option<u32> {
-        // First check if node is detached - if so, remove from detached tracking
-        let was_detached = self.detached_nodes.remove(&node).is_some();
+        // Check if node is a direct child of a slot (i.e., a slot root).
+        // In that case, we just detach it without a placeholder.
+        let parent = self.arena.get(node).and_then(|n| n.parent());
+        let is_slot_root = parent
+            .is_some_and(|p| self.arena.get(p).and_then(|n| n.parent()) == Some(self.super_root));
 
-        if !was_detached {
-            // Node is in tree - detach it with placeholder to prevent shifts
+        if !is_slot_root {
+            // Node is deeper in the tree - detach with placeholder to prevent shifts
             self.detach_with_placeholder(node);
+        } else {
+            // Node is a slot root - just detach it
+            node.detach(&mut self.arena);
         }
 
         // Now insert at target position
@@ -862,26 +859,6 @@ impl ShadowTree {
             new_parent.append(node, &mut self.arena);
             None
         }
-    }
-
-    /// Get a NodeRef with a specific position appended (for MOVE target).
-    fn get_node_ref_with_position(&self, parent: NodeId, position: usize) -> NodeRef {
-        // Check if parent is directly in a slot
-        if let Some(&slot) = self.detached_nodes.get(&parent) {
-            return NodeRef::Slot(slot, Some(NodePath(vec![position])));
-        }
-
-        // Check if an ancestor is in a slot
-        if let Some((slot, relative_path)) = self.find_detached_ancestor(parent) {
-            let mut path = relative_path.map(|p| p.0).unwrap_or_default();
-            path.push(position);
-            return NodeRef::Slot(slot, Some(NodePath(path)));
-        }
-
-        // Parent is in tree - compute its path and append position
-        let mut parent_path = self.compute_path(parent);
-        parent_path.push(position);
-        NodeRef::Path(NodePath(parent_path))
     }
 }
 
@@ -967,7 +944,10 @@ fn convert_ops_with_shadow(
                 ..
             } => {
                 // Find the parent in our shadow tree
-                let shadow_parent = b_to_shadow.get(&parent_b).copied().unwrap_or(shadow.root);
+                let shadow_parent = b_to_shadow
+                    .get(&parent_b)
+                    .copied()
+                    .unwrap_or_else(|| shadow.slot0_content());
 
                 // Create a new node in shadow tree (placeholder for structure tracking)
                 let new_data: NodeData<HtmlTreeTypes> = NodeData {
@@ -1058,17 +1038,11 @@ fn convert_ops_with_shadow(
                 let _node_kind = &tree_a.get(node_a).kind;
                 debug!(?node_a, ?_node_kind, "Delete operation");
 
-                // Get the node reference - shadow.get_node_ref() automatically handles
-                // ALL cases: directly detached, ancestor detached, or in tree!
+                // Get the node reference (path starts with slot number)
                 let node = shadow.get_node_ref(node_a);
 
-                // If node was directly detached, remove it from tracking
-                shadow.remove_from_detached(node_a);
-
-                // Detach from tree with placeholder (if still in tree)
-                if matches!(node, NodeRef::Path(_)) {
-                    shadow.detach_with_placeholder(node_a);
-                }
+                // Detach from tree with placeholder to preserve sibling positions
+                shadow.detach_with_placeholder(node_a);
 
                 result.push(Patch::Remove { node });
 
@@ -1086,7 +1060,7 @@ fn convert_ops_with_shadow(
                 let shadow_new_parent = b_to_shadow
                     .get(&new_parent_b)
                     .copied()
-                    .unwrap_or(shadow.root);
+                    .unwrap_or_else(|| shadow.slot0_content());
 
                 debug!(
                     ?node_a,
@@ -1096,20 +1070,13 @@ fn convert_ops_with_shadow(
                     "Move: starting"
                 );
 
-                // Get source reference - handles all cases automatically!
+                // Get source reference
                 debug!(?node_a, "Move: computing from reference for node");
                 let from = shadow.get_node_ref(node_a);
                 debug!(?node_a, ?from, "Move: computed from reference");
 
-                // Check if parent is detached
-                #[allow(unused_variables)]
-                let parent_is_detached = shadow.detached_nodes.contains_key(&shadow_new_parent);
-                debug!(
-                    ?shadow_new_parent,
-                    parent_is_detached, "Move: checking if parent is detached"
-                );
-
                 // Debug: check what's at the target position BEFORE the move
+                #[cfg(test)]
                 if shadow.arena.get(shadow_new_parent).is_some() {
                     #[allow(unused_variables)]
                     let children: Vec<_> = shadow_new_parent
@@ -1127,20 +1094,10 @@ fn convert_ops_with_shadow(
                 let detach_to_slot =
                     shadow.move_to_position(node_a, shadow_new_parent, new_position);
 
-                // Get target reference with position - handles all cases automatically!
+                // Get target reference with position
                 let to = shadow.get_node_ref_with_position(shadow_new_parent, new_position);
 
                 debug!(?node_a, ?from, ?to, ?detach_to_slot, "Generated Move patch");
-
-                // Debug: if we displaced something, check what the shadow tree thinks vs what will happen
-                if let Some(slot) = detach_to_slot
-                    && let Some((displaced_node, _)) =
-                        shadow.detached_nodes.iter().find(|(_, s)| **s == slot)
-                {
-                    #[allow(unused_variables)]
-                    let displaced_data = &shadow.arena[*displaced_node].get();
-                    debug!(slot, ?displaced_node, kind = ?displaced_data.kind, "Shadow tree displaced to slot");
-                }
 
                 result.push(Patch::Move {
                     from,
@@ -1516,7 +1473,8 @@ mod tests {
         assert_eq!(patches.len(), 1);
         match &patches[0] {
             Patch::UpdateProps { path, changes } => {
-                assert_eq!(path.0, vec![0, 0]); // text node path
+                // Path: [slot=0, div=0, text=0] - slot 0, first child of body (div), first child of div (text)
+                assert_eq!(path.0, vec![0, 0, 0]);
                 assert_eq!(changes.len(), 1);
                 assert!(matches!(changes[0].name, PropKey::Text));
                 assert_eq!(changes[0].value, Some(Stem::from("New content")));
@@ -1578,15 +1536,17 @@ mod tests {
         let patches = diff_html(old_html, new_html).expect("diff should work");
         debug!("Patches: {:#?}", patches);
 
-        // Check for slot references
+        // Check for slot references (first path element > 0 means it's in a non-main slot)
         for (i, patch) in patches.iter().enumerate() {
             debug!("Patch {}: {:?}", i, patch);
             if let Patch::Move { from, to, .. } = patch {
-                if let NodeRef::Slot(slot, _) = from {
-                    debug!("  -> Move FROM slot {}", slot);
+                let from_slot = from.0.0.first().copied().unwrap_or(0);
+                let to_slot = to.0.0.first().copied().unwrap_or(0);
+                if from_slot > 0 {
+                    debug!("  -> Move FROM slot {}", from_slot);
                 }
-                if let NodeRef::Slot(slot, _) = to {
-                    debug!("  -> Move TO slot {}", slot);
+                if to_slot > 0 {
+                    debug!("  -> Move TO slot {}", to_slot);
                 }
             }
         }
@@ -1596,6 +1556,10 @@ mod tests {
     fn test_fuzz_seed_27_template_4() {
         use crate::diff_html;
         use crate::dom;
+
+        // This test reproduces a bug where the diff algorithm generates paths like [0,2,3,0]
+        // but after all Move operations, [0,2] is a text node (which has no children).
+        // The Delete operation tries to navigate to child 3 of a text node and fails.
 
         let old_html = r##"<div>
     <h3>Features</h3>

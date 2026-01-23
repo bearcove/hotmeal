@@ -243,7 +243,7 @@ impl Document {
         output
     }
 
-    /// Navigate to a node by path starting from body.
+    /// Navigate to a node by path starting from body (legacy, for NodePath fields).
     /// Returns the NodeId at the given path.
     fn navigate_path(&self, path: &[usize]) -> Result<NodeId, DiffError> {
         let mut current = self.body().ok_or(DiffError::NoBody)?;
@@ -258,27 +258,55 @@ impl Document {
         Ok(current)
     }
 
-    /// Get parent of a node by path. Returns (parent_id, child_index).
-    fn get_parent(&self, path: &[usize]) -> Result<(NodeId, usize), DiffError> {
+    /// Navigate to a node using the new unified path format.
+    /// Path `[slot, a, b, c]` means: get slot root, then navigate a → b → c.
+    fn navigate_slot_path(
+        &self,
+        path: &[usize],
+        slots: &HashMap<u32, NodeId>,
+    ) -> Result<NodeId, DiffError> {
         if path.is_empty() {
             return Err(DiffError::EmptyPath);
         }
 
-        let parent_path = &path[..path.len() - 1];
-        let child_idx = path[path.len() - 1];
-        let parent_id = if parent_path.is_empty() {
-            self.body().ok_or(DiffError::NoBody)?
-        } else {
-            self.navigate_path(parent_path)?
-        };
+        let slot = path[0] as u32;
+        let slot_root = *slots.get(&slot).ok_or(DiffError::SlotNotFound { slot })?;
 
-        Ok((parent_id, child_idx))
+        let mut current = slot_root;
+        for &idx in &path[1..] {
+            let mut children = current.children(&self.arena);
+            current = children
+                .nth(idx)
+                .ok_or(DiffError::PathOutOfBounds { index: idx })?;
+        }
+
+        Ok(current)
+    }
+
+    /// Get parent and position from a unified slot path.
+    /// Path `[slot, a, b, c]` returns (node at [slot, a, b], position c).
+    fn get_slot_parent(
+        &self,
+        path: &[usize],
+        slots: &HashMap<u32, NodeId>,
+    ) -> Result<(NodeId, usize), DiffError> {
+        if path.len() < 2 {
+            return Err(DiffError::EmptyPath);
+        }
+
+        let position = path[path.len() - 1];
+        let parent_path = &path[..path.len() - 1];
+        let parent_id = self.navigate_slot_path(parent_path, slots)?;
+
+        Ok((parent_id, position))
     }
 
     /// Apply patches to this document (modifying it in place).
     pub fn apply_patches(&mut self, patches: Vec<Patch>) -> Result<(), DiffError> {
-        // Slots hold NodeIds that were displaced during edits
+        // Slots hold NodeIds - slot 0 is always the body (main tree)
         let mut slots: HashMap<u32, NodeId> = HashMap::new();
+        let body_id = self.body().ok_or(DiffError::NoBody)?;
+        slots.insert(0, body_id);
 
         for patch in patches {
             self.apply_patch(patch, &mut slots)?;
@@ -345,24 +373,19 @@ impl Document {
                 });
                 self.insert_at(&at, new_node, detach_to_slot, slots)?;
             }
-            Patch::Remove { node } => match &node {
-                NodeRef::Path(path) => {
-                    // Replace with empty text node to preserve sibling positions
-                    let node_id = self.navigate_path(&path.0)?;
-                    let empty_text = self.arena.new_node(NodeData {
-                        kind: NodeKind::Text(Stem::new()),
-                        ns: Namespace::Html,
-                    });
-                    node_id.insert_before(empty_text, &mut self.arena);
-                    node_id.detach(&mut self.arena);
-                }
-                NodeRef::Slot(slot, _rel_path) => {
-                    // Slots are already detached - just remove from map
-                    slots.remove(slot);
-                }
-            },
+            Patch::Remove { node } => {
+                let path = &node.0.0;
+                // Navigate to the node and replace with placeholder
+                let node_id = self.navigate_slot_path(path, slots)?;
+                let empty_text = self.arena.new_node(NodeData {
+                    kind: NodeKind::Text(Stem::new()),
+                    ns: Namespace::Html,
+                });
+                node_id.insert_before(empty_text, &mut self.arena);
+                node_id.detach(&mut self.arena);
+            }
             Patch::SetText { path, text } => {
-                let node_id = self.navigate_path(&path.0)?;
+                let node_id = self.navigate_slot_path(&path.0, slots)?;
                 let node_data = self.arena[node_id].get_mut();
                 if let NodeKind::Text(t) = &mut node_data.kind {
                     *t = text;
@@ -371,7 +394,7 @@ impl Document {
                 }
             }
             Patch::SetAttribute { path, name, value } => {
-                let node_id = self.navigate_path(&path.0)?;
+                let node_id = self.navigate_slot_path(&path.0, slots)?;
                 let node_data = self.arena[node_id].get_mut();
                 if let NodeKind::Element(elem) = &mut node_data.kind {
                     // Find existing attribute and update, or append new one
@@ -387,7 +410,7 @@ impl Document {
                 }
             }
             Patch::RemoveAttribute { path, name } => {
-                let node_id = self.navigate_path(&path.0)?;
+                let node_id = self.navigate_slot_path(&path.0, slots)?;
                 let node_data = self.arena[node_id].get_mut();
                 if let NodeKind::Element(elem) = &mut node_data.kind {
                     elem.attrs.retain(|(k, _)| k != &name);
@@ -400,14 +423,12 @@ impl Document {
                 to,
                 detach_to_slot,
             } => {
-                let node_to_move = self.resolve_node_ref(&from, slots)?;
+                let from_path = &from.0.0;
+                let node_to_move = self.navigate_slot_path(from_path, slots)?;
 
                 // Replace source position with empty text (no shifting!)
-                // Exception: Slot(_, None) means moving the entire slot root
-                let needs_replacement = match &from {
-                    NodeRef::Path(_) => true,
-                    NodeRef::Slot(_, rel_path) => rel_path.is_some(),
-                };
+                // Exception: path of length 1 (just [slot]) means the slot root itself
+                let needs_replacement = from_path.len() > 1;
 
                 if needs_replacement {
                     let empty_text = self.arena.new_node(NodeData {
@@ -416,12 +437,14 @@ impl Document {
                     });
                     node_to_move.insert_before(empty_text, &mut self.arena);
                     node_to_move.detach(&mut self.arena);
+                } else {
+                    node_to_move.detach(&mut self.arena);
                 }
 
                 self.insert_at(&to, node_to_move, detach_to_slot, slots)?;
             }
             Patch::UpdateProps { path, changes } => {
-                let node_id = self.navigate_path(&path.0)?;
+                let node_id = self.navigate_slot_path(&path.0, slots)?;
                 let node_data = self.arena[node_id].get_mut();
 
                 // Handle text node updates
@@ -479,33 +502,6 @@ impl Document {
         Ok(())
     }
 
-    fn resolve_node_ref(
-        &self,
-        node_ref: &NodeRef,
-        slots: &HashMap<u32, NodeId>,
-    ) -> Result<NodeId, DiffError> {
-        match node_ref {
-            NodeRef::Path(path) => self.navigate_path(&path.0),
-            NodeRef::Slot(slot, rel_path) => {
-                let slot_node = slots
-                    .get(slot)
-                    .ok_or(DiffError::SlotNotFound { slot: *slot })?;
-                if let Some(path) = rel_path {
-                    let mut current = *slot_node;
-                    for &idx in &path.0 {
-                        let mut children = current.children(&self.arena);
-                        current = children
-                            .nth(idx)
-                            .ok_or(DiffError::PathOutOfBounds { index: idx })?;
-                    }
-                    Ok(current)
-                } else {
-                    Ok(*slot_node)
-                }
-            }
-        }
-    }
-
     fn insert_at(
         &mut self,
         at: &NodeRef,
@@ -513,68 +509,29 @@ impl Document {
         detach_to_slot: Option<u32>,
         slots: &mut HashMap<u32, NodeId>,
     ) -> Result<(), DiffError> {
-        match at {
-            NodeRef::Path(path) => {
-                let (parent_id, position) = self.get_parent(&path.0)?;
+        let path = &at.0.0;
+        let (parent_id, position) = self.get_slot_parent(path, slots)?;
 
-                if let Some(slot) = detach_to_slot {
-                    let children: Vec<_> = parent_id.children(&self.arena).collect();
-                    if position < children.len() {
-                        let displaced = children[position];
-                        displaced.detach(&mut self.arena);
-                        slots.insert(slot, displaced);
-                    }
-                }
+        debug!(
+            "insert_at: path={:?}, parent={:?}, position={}",
+            path, parent_id, position
+        );
 
-                self.insert_at_position(parent_id, position, node_to_insert)?;
-            }
-            NodeRef::Slot(slot, rel_path) => {
-                let slot_node = *slots
-                    .get(slot)
-                    .ok_or(DiffError::SlotNotFound { slot: *slot })?;
-
-                if let Some(path) = rel_path {
-                    let parent_path = &path.0[..path.0.len() - 1];
-                    let position = path.0[path.0.len() - 1];
-
-                    debug!(
-                        "insert_at Slot: slot={}, slot_node={:?}, rel_path={:?}, position={}",
-                        slot, slot_node, path.0, position
-                    );
-
-                    let mut parent_id = slot_node;
-                    for &idx in parent_path {
-                        let mut children = parent_id.children(&self.arena);
-                        parent_id = children
-                            .nth(idx)
-                            .ok_or(DiffError::PathOutOfBounds { index: idx })?;
-                    }
-
-                    debug!(
-                        "insert_at Slot: after navigation, parent_id={:?}",
-                        parent_id
-                    );
-
-                    if let Some(new_slot) = detach_to_slot {
-                        let children: Vec<_> = parent_id.children(&self.arena).collect();
-                        debug!(
-                            "insert_at Slot: detaching at position {}, children.len()={}",
-                            position,
-                            children.len()
-                        );
-                        if position < children.len() {
-                            let displaced = children[position];
-                            displaced.detach(&mut self.arena);
-                            slots.insert(new_slot, displaced);
-                        }
-                    }
-
-                    self.insert_at_position(parent_id, position, node_to_insert)?;
-                } else {
-                    return Err(DiffError::SlotMissingRelativePath);
-                }
+        if let Some(slot) = detach_to_slot {
+            let children: Vec<_> = parent_id.children(&self.arena).collect();
+            debug!(
+                "insert_at: detaching at position {}, children.len()={}",
+                position,
+                children.len()
+            );
+            if position < children.len() {
+                let displaced = children[position];
+                displaced.detach(&mut self.arena);
+                slots.insert(slot, displaced);
             }
         }
+
+        self.insert_at_position(parent_id, position, node_to_insert)?;
 
         Ok(())
     }
