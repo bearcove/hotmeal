@@ -43,3 +43,6 @@ datatest-stable = "0.3"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(facet_no_doc)"] }
+
+[workspace.metadata.cargo-shear]
+ignored = ["facet-error"]
