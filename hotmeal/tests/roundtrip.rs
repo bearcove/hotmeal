@@ -9,8 +9,8 @@
 //!
 //! The test verifies: apply(old, diff(old, new)) == new
 
-use hotmeal::arena_dom::parse;
-use hotmeal::diff::diff_arena_documents;
+use hotmeal::diff;
+use hotmeal::parse;
 use std::path::Path;
 
 fn run_roundtrip_test(path: &Path) -> datatest_stable::Result<()> {
@@ -33,8 +33,7 @@ fn run_roundtrip_test(path: &Path) -> datatest_stable::Result<()> {
     let old_doc = parse(old);
     let new_doc = parse(new);
 
-    let patches =
-        diff_arena_documents(&old_doc, &new_doc).map_err(|e| format!("diff failed: {e:?}"))?;
+    let patches = diff(&old_doc, &new_doc).map_err(|e| format!("diff failed: {e:?}"))?;
 
     let mut tree = parse(old);
     tree.apply_patches(patches)

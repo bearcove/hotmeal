@@ -1,9 +1,7 @@
 //! Tests for patch application.
 
 use facet_testhelpers::test;
-use hotmeal::Stem;
-use hotmeal::arena_dom::parse;
-use hotmeal::diff::{InsertContent, NodePath, NodeRef, Patch};
+use hotmeal::{InsertContent, NodeKind, NodePath, NodeRef, Patch, Stem, parse};
 
 #[test]
 fn test_parse_and_serialize_roundtrip() {
@@ -147,7 +145,7 @@ fn test_parse_invalid_html_nesting() {
     let body = doc.body().expect("should have body");
     let strong = doc.first_child(body).expect("body should have children");
 
-    if let hotmeal::arena_dom::NodeKind::Element(elem) = &doc.get(strong).kind {
+    if let NodeKind::Element(elem) = &doc.get(strong).kind {
         assert_eq!(elem.tag.as_ref(), "strong");
     } else {
         panic!("Expected element, got {:?}", doc.get(strong).kind);
@@ -156,14 +154,14 @@ fn test_parse_invalid_html_nesting() {
     let div = doc
         .first_child(strong)
         .expect("strong should have children");
-    if let hotmeal::arena_dom::NodeKind::Element(elem) = &doc.get(div).kind {
+    if let NodeKind::Element(elem) = &doc.get(div).kind {
         assert_eq!(elem.tag.as_ref(), "div");
     } else {
         panic!("Expected div element, got {:?}", doc.get(div).kind);
     }
 
     let text_node = doc.first_child(div).expect("div should have text");
-    if let hotmeal::arena_dom::NodeKind::Text(text) = &doc.get(text_node).kind {
+    if let NodeKind::Text(text) = &doc.get(text_node).kind {
         assert_eq!(text.as_ref(), "nested div");
     } else {
         panic!("Expected text node");

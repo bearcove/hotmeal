@@ -11,7 +11,7 @@
 //! target position into a numbered slot. The DOM's `replaceChild` method
 //! provides atomic displacement, returning the removed node for storage.
 
-use hotmeal::diff::InsertContent;
+use hotmeal::{InsertContent, NodeId, parse};
 use tracing::{debug, trace};
 use wasm_bindgen::prelude::*;
 use web_sys::{Document, Element, Node};
@@ -26,13 +26,13 @@ pub fn init_tracing() {
 }
 
 // Re-export patch types for reference
-pub use hotmeal::diff::{NodePath, NodeRef, Patch, PropChange};
+pub use hotmeal::{NodePath, NodeRef, Patch, PropChange};
 
 /// Compute diff between two HTML documents and return patches as JSON.
 /// This allows computing diffs in the browser for fuzzing tests.
 #[wasm_bindgen]
 pub fn diff_html(old_html: &str, new_html: &str) -> Result<String, JsValue> {
-    let patches = hotmeal::diff::diff_html(old_html, new_html)
+    let patches = hotmeal::diff_html(old_html, new_html)
         .map_err(|e| JsValue::from_str(&format!("diff failed: {e}")))?;
 
     let json = facet_json::to_string(&patches)
@@ -379,7 +379,7 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             let node = find_node(doc, path, slots)?;
 
             // Handle text content updates
-            if let Some(text_change) = changes.iter().find(|c| c.name == "_text")
+            if let Some(text_change) = changes.iter().find(|c| c.name.as_ref() == "_text")
                 && let Some(v) = &text_change.value
             {
                 node.set_text_content(Some(v));
@@ -390,10 +390,10 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             // The changes vec represents the ENTIRE final attribute state
             if let Some(el) = node.dyn_ref::<Element>() {
                 // Collect attribute names in changes (excluding _text)
-                let final_attrs: std::collections::HashSet<_> = changes
+                let final_attrs: std::collections::HashSet<&str> = changes
                     .iter()
-                    .filter(|c| c.name != "_text")
-                    .map(|c| c.name.as_str())
+                    .filter(|c| c.name.as_ref() != "_text")
+                    .map(|c| c.name.as_ref())
                     .collect();
 
                 // Remove attributes not in final state
@@ -409,11 +409,11 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
 
                 // Set attributes from changes
                 for change in changes {
-                    if change.name != "_text"
+                    if change.name.as_ref() != "_text"
                         && let Some(new_value) = &change.value
                     {
                         // Different value - update it
-                        el.set_attribute(&change.name, new_value)?;
+                        el.set_attribute(change.name.as_ref(), new_value.as_ref())?;
                     }
                     // None means keep existing - do nothing (attribute already exists)
                 }
@@ -699,36 +699,35 @@ pub fn dump_browser_dom() -> Result<String, JsValue> {
 }
 
 /// Dump the Rust-parsed HTML structure as a string (for debugging).
-/// Uses the untyped parser (Element/Content) which is what diff_html uses.
+/// Uses arena_dom which is what diff_html uses.
 #[wasm_bindgen]
 pub fn dump_rust_parsed(html: &str) -> Result<String, JsValue> {
-    use hotmeal::diff::{Content, Element};
+    use hotmeal::{self, NodeKind};
 
     let full_html = format!("<html><body>{}</body></html>", html);
-    let parsed: Element = hotmeal::parser::parse_untyped(&full_html);
+    let doc = parse(&full_html);
 
-    fn dump_element(elem: &Element, indent: usize) -> String {
+    fn dump_node(doc: &hotmeal::Document, node_id: NodeId, indent: usize) -> String {
         let prefix = "  ".repeat(indent);
-        let mut result = format!("{}Element({})\n", prefix, elem.tag.to_uppercase());
-        for child in &elem.children {
-            result.push_str(&dump_content(child, indent + 1));
+        let node = doc.get(node_id);
+        let mut result = match &node.kind {
+            NodeKind::Document => format!("{}Document\n", prefix),
+            NodeKind::Element(elem) => {
+                format!("{}Element({})\n", prefix, elem.tag.as_ref().to_uppercase())
+            }
+            NodeKind::Text(t) => {
+                let escaped = t.as_ref().replace('\n', "\\n").replace(' ', "·");
+                format!("{}Text({:?})\n", prefix, escaped)
+            }
+            NodeKind::Comment(c) => {
+                format!("{}Comment({:?})\n", prefix, c.as_ref())
+            }
+        };
+        for child_id in node_id.children(&doc.arena) {
+            result.push_str(&dump_node(doc, child_id, indent + 1));
         }
         result
     }
 
-    fn dump_content(content: &Content, indent: usize) -> String {
-        let prefix = "  ".repeat(indent);
-        match content {
-            Content::Text(t) => {
-                let escaped = t.replace('\n', "\\n").replace(' ', "·");
-                format!("{}Text({:?})\n", prefix, escaped)
-            }
-            Content::Element(elem) => dump_element(elem, indent),
-            Content::Comment(c) => {
-                format!("{}Comment({:?})\n", prefix, c)
-            }
-        }
-    }
-
-    Ok(dump_element(&parsed, 0))
+    Ok(dump_node(&doc, doc.root, 0))
 }

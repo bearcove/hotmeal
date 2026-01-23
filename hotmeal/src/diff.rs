@@ -1,26 +1,171 @@
-//! Direct cinereus tree implementation for HTML DOM.
+//! HTML diffing with DOM patch generation.
 //!
-//! This module implements cinereus traits directly on hotmeal's DOM types,
-//! bypassing the facet reflection layer for simpler, more efficient diffing.
+//! This module uses cinereus (GumTree/Chawathe) to compute tree diffs and translates
+//! them into DOM patches that can be applied to update an HTML document incrementally.
 
-#[allow(unused_imports)]
-use crate::trace;
 use crate::{
-    Stem,
-    arena_dom::{Document, NodeKind},
-    debug,
+    Stem, debug,
+    dom::{self, Document, NodeKind},
 };
 use cinereus::{
     EditOp, Matching, MatchingConfig, NodeData, NodeHash, PropValue, Properties,
     PropertyInFinalState, Tree, TreeTypes,
     indextree::{self, NodeId},
 };
+use facet::Facet;
 use indexmap::IndexMap;
 use rapidhash::RapidHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
-use super::{DiffError, InsertContent, NodePath, NodeRef, Patch, PropChange};
+#[allow(unused_imports)]
+use crate::trace;
+
+/// Errors that can occur during diffing or patch application.
+#[derive(Facet, Debug)]
+#[facet(derive(Error))]
+#[repr(u8)]
+pub enum DiffError {
+    /// no body element found in document
+    NoBody,
+
+    /// path index {index} out of bounds
+    PathOutOfBounds { index: usize },
+
+    /// cannot get parent of empty path
+    EmptyPath,
+
+    /// slot {slot} not found
+    SlotNotFound { slot: u32 },
+
+    /// cannot insert at slot without relative path
+    SlotMissingRelativePath,
+
+    /// node is not a text node
+    NotATextNode,
+
+    /// node is not an element
+    NotAnElement,
+
+    /// node is not a comment
+    NotAComment,
+}
+
+/// A path to a node in the DOM tree.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, facet::Facet)]
+#[facet(transparent)]
+pub struct NodePath(pub Vec<usize>);
+
+impl std::fmt::Display for NodePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, idx) in self.0.iter().enumerate() {
+            if i > 0 {
+                write!(f, ".")?;
+            }
+            write!(f, "{}", idx)?;
+        }
+        Ok(())
+    }
+}
+
+/// Reference to a node - either by path or by slot number.
+#[derive(Debug, Clone, PartialEq, Eq, facet::Facet)]
+#[repr(u8)]
+pub enum NodeRef {
+    /// Node at a path in the DOM
+    Path(NodePath),
+    /// Node in a slot (previously detached).
+    Slot(u32, Option<NodePath>),
+}
+
+/// Content that can be inserted as part of a new subtree.
+#[derive(Debug, Clone, PartialEq, Eq, facet::Facet)]
+#[repr(u8)]
+pub enum InsertContent {
+    /// An element with its tag, attributes, and nested children
+    Element {
+        tag: Stem,
+        attrs: Vec<(Stem, Stem)>,
+        children: Vec<InsertContent>,
+    },
+    /// A text node
+    Text(Stem),
+    /// A comment node
+    Comment(Stem),
+}
+
+/// A property in the final state within an UpdateProps operation.
+/// The vec position determines the final ordering.
+#[derive(Debug, Clone, PartialEq, Eq, facet::Facet)]
+pub struct PropChange {
+    /// The property name (field name)
+    pub name: Stem,
+    /// The value: None means "keep existing value", Some means "update to this value".
+    /// Properties not in the list are implicitly removed.
+    pub value: Option<Stem>,
+}
+
+/// Operations to transform the DOM.
+#[derive(Debug, Clone, PartialEq, Eq, facet::Facet)]
+#[repr(u8)]
+pub enum Patch {
+    /// Insert an element at a position.
+    /// The `at` NodeRef includes the position as the last path segment.
+    /// For Path(NodePath(\[a, b, c\])), insert at position c within parent at path \[a, b\].
+    /// For Slot(n, Some(NodePath(\[a, b\]))), insert at position b within element at path \[a\] in slot n.
+    InsertElement {
+        at: NodeRef,
+        tag: Stem,
+        attrs: Vec<(Stem, Stem)>,
+        children: Vec<InsertContent>,
+        detach_to_slot: Option<u32>,
+    },
+
+    /// Insert a text node at a position.
+    /// The `at` NodeRef includes the position as the last path segment.
+    InsertText {
+        at: NodeRef,
+        text: Stem,
+        detach_to_slot: Option<u32>,
+    },
+
+    /// Insert a comment node at a position.
+    /// The `at` NodeRef includes the position as the last path segment.
+    InsertComment {
+        at: NodeRef,
+        text: Stem,
+        detach_to_slot: Option<u32>,
+    },
+
+    /// Remove a node
+    Remove { node: NodeRef },
+
+    /// Update text content of a text node at path.
+    SetText { path: NodePath, text: Stem },
+
+    /// Set attribute on element at path
+    SetAttribute {
+        path: NodePath,
+        name: Stem,
+        value: Stem,
+    },
+
+    /// Remove attribute from element at path
+    RemoveAttribute { path: NodePath, name: Stem },
+
+    /// Move a node from one location to another.
+    Move {
+        from: NodeRef,
+        to: NodeRef,
+        detach_to_slot: Option<u32>,
+    },
+
+    /// Update multiple properties on an element.
+    UpdateProps {
+        path: NodePath,
+        changes: Vec<PropChange>,
+    },
+}
 
 /// Node kind in the HTML tree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -257,8 +402,19 @@ fn recompute_hashes(tree: &mut Tree<HtmlTreeTypes>) {
     }
 }
 
-/// Compute diff between two arena_dom::Documents and return patches.
-pub fn diff_arena_documents(old: &Document, new: &Document) -> Result<Vec<Patch>, DiffError> {
+/// Diff two HTML strings and return DOM patches.
+///
+/// Parses both HTML strings and diffs them.
+pub fn diff_html(old_html: &str, new_html: &str) -> Result<Vec<Patch>, DiffError> {
+    let old_doc = dom::parse(old_html);
+    let new_doc = dom::parse(new_html);
+    diff(&old_doc, &new_doc)
+}
+
+/// Diff two arena documents and return DOM patches.
+///
+/// This is the primary diffing API for arena_dom documents.
+pub fn diff(old: &Document, new: &Document) -> Result<Vec<Patch>, DiffError> {
     let tree_a = build_tree_from_arena(old);
     let tree_b = build_tree_from_arena(new);
 
@@ -955,12 +1111,12 @@ fn extract_content_from_tree_b(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena_dom;
+    use crate::dom;
     use facet_testhelpers::test;
 
     #[test]
     fn test_build_tree_simple() {
-        let doc = arena_dom::parse("<html><body><div>hello</div></body></html>");
+        let doc = dom::parse("<html><body><div>hello</div></body></html>");
         let tree = build_tree_from_arena(&doc);
 
         // Root is body element (build_tree_from_arena uses body as root)
@@ -976,9 +1132,9 @@ mod tests {
         let old_html = "<html><body><div>old</div></body></html>";
         let new_html = "<html><body><div>new</div></body></html>";
 
-        let old = arena_dom::parse(old_html);
-        let new = arena_dom::parse(new_html);
-        let patches = diff_arena_documents(&old, &new).unwrap();
+        let old = dom::parse(old_html);
+        let new = dom::parse(new_html);
+        let patches = diff(&old, &new).unwrap();
 
         // Should have an UpdateProps patch for the text change
         let has_text_update = patches.iter().any(|p| {
@@ -997,9 +1153,9 @@ mod tests {
         let old_html = r#"<html><body><div class="foo"></div></body></html>"#;
         let new_html = r#"<html><body><div class="bar"></div></body></html>"#;
 
-        let old = arena_dom::parse(old_html);
-        let new = arena_dom::parse(new_html);
-        let patches = diff_arena_documents(&old, &new).unwrap();
+        let old = dom::parse(old_html);
+        let new = dom::parse(new_html);
+        let patches = diff(&old, &new).unwrap();
 
         let has_attr_update = patches.iter().any(|p| {
             matches!(p, Patch::UpdateProps { changes, .. }
@@ -1018,17 +1174,17 @@ mod tests {
         let old_html = "<html><body><span></span></body></html>";
         let new_html = "<html><body></body></html>";
 
-        let old = arena_dom::parse(old_html);
-        let new = arena_dom::parse(new_html);
-        let patches = diff_arena_documents(&old, &new).unwrap();
+        let old = dom::parse(old_html);
+        let new = dom::parse(new_html);
+        let patches = diff(&old, &new).unwrap();
         debug!("Patches: {:#?}", patches);
 
         // Should be able to apply the patches
-        let mut doc = arena_dom::parse(old_html);
+        let mut doc = dom::parse(old_html);
         doc.apply_patches(patches).expect("apply should succeed");
 
         let result = doc.to_html();
-        let expected = arena_dom::parse(new_html).to_html();
+        let expected = dom::parse(new_html).to_html();
         assert_eq!(result, expected, "HTML output should match");
     }
 
@@ -1038,16 +1194,16 @@ mod tests {
         let old_html = "<html><body><strong>old</strong></body></html>";
         let new_html = "<html><body>new_text<strong>updated</strong></body></html>";
 
-        let old = arena_dom::parse(old_html);
-        let new = arena_dom::parse(new_html);
-        let patches = diff_arena_documents(&old, &new).unwrap();
+        let old = dom::parse(old_html);
+        let new = dom::parse(new_html);
+        let patches = diff(&old, &new).unwrap();
         debug!("Patches: {:#?}", patches);
 
-        let mut doc = arena_dom::parse(old_html);
+        let mut doc = dom::parse(old_html);
         doc.apply_patches(patches).expect("apply should succeed");
 
         let result = doc.to_html();
-        let expected = arena_dom::parse(new_html).to_html();
+        let expected = dom::parse(new_html).to_html();
         debug!("Result: {}", result);
         debug!("Expected: {}", expected);
         assert_eq!(result, expected, "HTML output should match");
@@ -1062,16 +1218,16 @@ mod tests {
             "<html><body><strong>text1</strong><strong>text2</strong><img></body></html>";
         let new_html = "<html><body>text3<strong>text4</strong></body></html>";
 
-        let old = arena_dom::parse(old_html);
-        let new = arena_dom::parse(new_html);
-        let patches = diff_arena_documents(&old, &new).unwrap();
+        let old = dom::parse(old_html);
+        let new = dom::parse(new_html);
+        let patches = diff(&old, &new).unwrap();
         debug!("Patches: {:#?}", patches);
 
-        let mut doc = arena_dom::parse(old_html);
+        let mut doc = dom::parse(old_html);
         doc.apply_patches(patches).expect("apply should succeed");
 
         let result = doc.to_html();
-        let expected = arena_dom::parse(new_html).to_html();
+        let expected = dom::parse(new_html).to_html();
         debug!("Result: {}", result);
         debug!("Expected: {}", expected);
         assert_eq!(result, expected, "HTML output should match");
@@ -1088,16 +1244,16 @@ mod tests {
         let old_html = r#"<html><body><strong>n<&nhnnz"""" v</strong><strong>< bit<jva       xx a ></strong><img src="n" alt="v"></body></html>"#;
         let new_html = r#"<html><body>n<strong>aaa</strong></body></html>"#;
 
-        let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
+        let patches = super::diff_html(old_html, new_html).expect("diff failed");
         debug!("Patches: {:#?}", patches);
 
-        let mut doc = arena_dom::parse(old_html);
+        let mut doc = dom::parse(old_html);
         trace!("Old tree: {:#?}", doc);
 
         doc.apply_patches(patches).expect("apply failed");
 
         let result = doc.to_html();
-        let expected = arena_dom::parse(new_html).to_html();
+        let expected = dom::parse(new_html).to_html();
 
         debug!("Result: {}", result);
         debug!("Expected: {}", expected);
@@ -1110,14 +1266,14 @@ mod tests {
         let old_html = r#"<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd"><html><body><p>Unclosed paragraph<span class=""></span><div>Inside P which browsers will auto-close</div><span>Unclosed span<div>Block in span</div></body></html>"#;
         let new_html = r#"<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd"><html><body><img src="vvv" alt="ttt">d <li>d<<<&<<a"d <<<</li></body></html>"#;
 
-        let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
+        let patches = super::diff_html(old_html, new_html).expect("diff failed");
         debug!("Patches: {:#?}", patches);
 
-        let mut doc = arena_dom::parse(old_html);
+        let mut doc = dom::parse(old_html);
         doc.apply_patches(patches).expect("apply failed");
 
         let result = doc.to_html();
-        let expected_doc = arena_dom::parse(new_html);
+        let expected_doc = dom::parse(new_html);
         let expected = expected_doc.to_html();
 
         debug!("Result: {}", result);
@@ -1131,14 +1287,14 @@ mod tests {
         let old_html = r#"<!DOCTYPE html><html><body><ul class="h"><ul class="z"><img src="vvv" alt="wvv"><ul class="h"><img src="vvv"></ul></ul></ul></body></html>"#;
         let new_html = r#"<!DOCTYPE html><html><body><ul class="h"><ul class="h"></ul><ul class="q"><img src="aaa"></ul></ul></body></html>"#;
 
-        let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
+        let patches = super::diff_html(old_html, new_html).expect("diff failed");
         debug!("Patches: {:#?}", patches);
 
-        let mut doc = arena_dom::parse(old_html);
+        let mut doc = dom::parse(old_html);
         doc.apply_patches(patches).expect("apply failed");
 
         let result = doc.to_html();
-        let expected_doc = arena_dom::parse(new_html);
+        let expected_doc = dom::parse(new_html);
         let expected = expected_doc.to_html();
 
         debug!("Result: {}", result);
@@ -1154,19 +1310,19 @@ mod tests {
         let new_html =
             r#"<!DOCTYPE html><html><body><li>a< <v<      <<</li><img src=""></body></html>"#;
 
-        let old_doc = arena_dom::parse(old_html);
-        let new_doc = arena_dom::parse(new_html);
+        let old_doc = dom::parse(old_html);
+        let new_doc = dom::parse(new_html);
         debug!("Old HTML parsed: {:#?}", old_doc);
         debug!("New HTML parsed: {:#?}", new_doc);
 
-        let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
+        let patches = super::diff_html(old_html, new_html).expect("diff failed");
         debug!("Patches: {:#?}", patches);
 
-        let mut doc = arena_dom::parse(old_html);
+        let mut doc = dom::parse(old_html);
         doc.apply_patches(patches).expect("apply failed");
 
         let result = doc.to_html();
-        let expected = arena_dom::parse(new_html).to_html();
+        let expected = dom::parse(new_html).to_html();
 
         debug!("Result: {}", result);
         debug!("Expected: {}", expected);
@@ -1179,14 +1335,14 @@ mod tests {
         let old_html = r#"<!DOCTYPE html><html><body><ol start="0"></ol></body></html>"#;
         let new_html = r#"<!DOCTYPE html><html><body><ol start="255"></ol><ol start="93"></ol><ol start="91"><ol start="1"><a href="vaaaaaaaaaaaaa"></a></ol></ol></body></html>"#;
 
-        let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
+        let patches = super::diff_html(old_html, new_html).expect("diff failed");
         debug!("Patches: {:#?}", patches);
 
-        let mut doc = arena_dom::parse(old_html);
+        let mut doc = dom::parse(old_html);
         doc.apply_patches(patches).expect("apply failed");
 
         let result = doc.to_html();
-        let expected_doc = arena_dom::parse(new_html);
+        let expected_doc = dom::parse(new_html);
         let expected = expected_doc.to_html();
 
         debug!("Result: {}", result);
@@ -1200,14 +1356,14 @@ mod tests {
         let old_html = r#"<!DOCTYPE html><html><body><article><code><</code><code><</code><code><</code><code><</code></article></body></html>"#;
         let new_html = r#"<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd"><html><body><code><</code><code><</code><code><</code><code><</code><article><code><</code><code><</code><h2><<<<<<<<<<<<<</h2></article></body></html>"#;
 
-        let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
+        let patches = super::diff_html(old_html, new_html).expect("diff failed");
         debug!("Patches: {:#?}", patches);
 
-        let mut doc = arena_dom::parse(old_html);
+        let mut doc = dom::parse(old_html);
         doc.apply_patches(patches).expect("apply failed");
 
         let result = doc.to_html();
-        let expected = arena_dom::parse(new_html).to_html();
+        let expected = dom::parse(new_html).to_html();
 
         debug!("Result: {}", result);
         debug!("Expected: {}", expected);
@@ -1221,14 +1377,14 @@ mod tests {
         let old_html = r#"<!DOCTYPE html><html><body><article><code><</code><code><</code><code><</code><code><</code><article><article><code><</code></article></article></article></body></html>"#;
         let new_html = r#"<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd"><html><body><code><</code><code><</code><code><</code><code><</code><article><code><</code><code><</code><h2><<<<<<<<<<<<<</h2></article></body></html>"#;
 
-        let patches = super::super::diff_html(old_html, new_html).expect("diff failed");
+        let patches = super::diff_html(old_html, new_html).expect("diff failed");
         debug!("Patches: {:#?}", patches);
 
-        let mut doc = arena_dom::parse(old_html);
+        let mut doc = dom::parse(old_html);
         doc.apply_patches(patches).expect("apply failed");
 
         let result = doc.to_html();
-        let expected = arena_dom::parse(new_html).to_html();
+        let expected = dom::parse(new_html).to_html();
 
         debug!("Result: {}", result);
         debug!("Expected: {}", expected);
@@ -1241,10 +1397,10 @@ mod tests {
         let old_html = "<html><body><div>Old content</div></body></html>";
         let new_html = "<html><body><div>New content</div></body></html>";
 
-        let old_doc = arena_dom::parse(old_html);
-        let new_doc = arena_dom::parse(new_html);
+        let old_doc = dom::parse(old_html);
+        let new_doc = dom::parse(new_html);
 
-        let patches = diff_arena_documents(&old_doc, &new_doc).expect("diff failed");
+        let patches = diff(&old_doc, &new_doc).expect("diff failed");
         debug!("Patches: {:#?}", patches);
 
         // Should have an UpdateProps patch with _text change
@@ -1265,10 +1421,10 @@ mod tests {
         let old_html = "<html><body><div>Content</div></body></html>";
         let new_html = "<html><body><div>Content</div><p>New paragraph</p></body></html>";
 
-        let old_doc = arena_dom::parse(old_html);
-        let new_doc = arena_dom::parse(new_html);
+        let old_doc = dom::parse(old_html);
+        let new_doc = dom::parse(new_html);
 
-        let patches = diff_arena_documents(&old_doc, &new_doc).expect("diff failed");
+        let patches = diff(&old_doc, &new_doc).expect("diff failed");
         debug!("Patches: {:#?}", patches);
 
         // Should have an InsertElement patch

@@ -30,13 +30,17 @@
 
 use tendril::{NonAtomic, Tendril, fmt::UTF8};
 
+mod diff;
+mod dom;
 mod tracing_macros;
 
-pub mod arena_dom;
-pub mod diff;
-
 // Re-export arena_dom types and functions as the primary API
-pub use arena_dom::{Document, ElementData, Namespace, NodeData, NodeKind, parse};
+pub use cinereus::indextree::NodeId;
+pub use diff::{
+    DiffError, HtmlNodeKind, HtmlProps, HtmlTreeTypes, InsertContent, NodePath, NodeRef, Patch,
+    PropChange, diff, diff_html,
+};
+pub use dom::{Document, ElementData, Namespace, NodeData, NodeKind, parse};
 
 /// Zero-copy string tendril
 pub type Stem = Tendril<UTF8, NonAtomic>;

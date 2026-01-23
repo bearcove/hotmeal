@@ -1260,8 +1260,7 @@ mod tests {
         let new_doc = parse(new_html);
 
         // Generate patches
-        let patches =
-            crate::diff::diff_arena_documents(&old_doc, &new_doc).expect("diff should succeed");
+        let patches = crate::diff::diff(&old_doc, &new_doc).expect("diff should succeed");
 
         // Apply patches to a fresh copy of old
         let mut mut_old_doc = parse(old_html);
@@ -1281,7 +1280,7 @@ mod tests {
         let old_doc = parse(old_html);
         let new_doc = parse(new_html);
 
-        let patches = crate::diff::diff_arena_documents(&old_doc, &new_doc).expect("diff failed");
+        let patches = crate::diff::diff(&old_doc, &new_doc).expect("diff failed");
 
         let mut mut_old_doc = parse(old_html);
         mut_old_doc.apply_patches(patches).expect("apply failed");
