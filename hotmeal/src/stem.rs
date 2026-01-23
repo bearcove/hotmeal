@@ -45,10 +45,7 @@ impl<'a> Stem<'a> {
                 existing.push_str(s);
             }
             Self::Borrowed(borrowed) => {
-                let mut combined = CompactString::with_capacity(borrowed.len() + s.len());
-                combined.push_str(borrowed);
-                combined.push_str(s);
-                *self = Self::Owned(combined);
+                *self = Self::Owned(compact_str::format_compact!("{}{}", borrowed, s));
             }
         }
     }
