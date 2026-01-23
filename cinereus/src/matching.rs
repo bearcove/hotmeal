@@ -9,7 +9,6 @@ use crate::{debug, trace};
 use crate::tree::{Properties, Tree, TreeTypes};
 use indextree::NodeId;
 use rapidhash::{RapidHashMap as HashMap, RapidHashSet as HashSet};
-use rayon::prelude::*;
 
 #[cfg(feature = "matching-stats")]
 use core::cell::RefCell;
@@ -289,16 +288,16 @@ impl DescendantMap {
     }
 }
 
-/// Precompute all descendant sets in parallel.
+/// Precompute all descendant sets.
 fn precompute_descendants<T: TreeTypes>(tree: &Tree<T>) -> DescendantMap {
     let nodes: Vec<NodeId> = tree.iter().collect();
 
     // Find max index to size the vec
     let max_idx = nodes.iter().map(|&id| usize::from(id)).max().unwrap_or(0);
 
-    // Compute descendants in parallel
+    // Compute descendants sequentially
     let computed: Vec<(usize, HashSet<NodeId>)> = nodes
-        .into_par_iter()
+        .into_iter()
         .map(|node_id| {
             let idx = usize::from(node_id);
             let descendants: HashSet<NodeId> = tree.descendants(node_id).collect();
@@ -679,29 +678,17 @@ mod tests {
     use super::*;
     use crate::tree::{NodeData, SimpleTypes};
 
-    type TestTypes = SimpleTypes<&'static str, String>;
+    type TestTypes = SimpleTypes<&'static str>;
 
     #[test]
     fn test_identical_trees() {
         let mut tree_a: Tree<TestTypes> = Tree::new(NodeData::simple_u64(100, "root"));
-        tree_a.add_child(
-            tree_a.root,
-            NodeData::simple_leaf_u64(1, "leaf", "a".to_string()),
-        );
-        tree_a.add_child(
-            tree_a.root,
-            NodeData::simple_leaf_u64(2, "leaf", "b".to_string()),
-        );
+        tree_a.add_child(tree_a.root, NodeData::simple_u64(1, "leaf"));
+        tree_a.add_child(tree_a.root, NodeData::simple_u64(2, "leaf"));
 
         let mut tree_b: Tree<TestTypes> = Tree::new(NodeData::simple_u64(100, "root"));
-        tree_b.add_child(
-            tree_b.root,
-            NodeData::simple_leaf_u64(1, "leaf", "a".to_string()),
-        );
-        tree_b.add_child(
-            tree_b.root,
-            NodeData::simple_leaf_u64(2, "leaf", "b".to_string()),
-        );
+        tree_b.add_child(tree_b.root, NodeData::simple_u64(1, "leaf"));
+        tree_b.add_child(tree_b.root, NodeData::simple_u64(2, "leaf"));
 
         let matching = compute_matching(&tree_a, &tree_b, &MatchingConfig::default());
 
@@ -713,24 +700,12 @@ mod tests {
     fn test_partial_match() {
         // Trees with same structure but one leaf differs
         let mut tree_a: Tree<TestTypes> = Tree::new(NodeData::simple_u64(100, "root"));
-        let child1_a = tree_a.add_child(
-            tree_a.root,
-            NodeData::simple_leaf_u64(1, "leaf", "same".to_string()),
-        );
-        let _child2_a = tree_a.add_child(
-            tree_a.root,
-            NodeData::simple_leaf_u64(2, "leaf", "diff_a".to_string()),
-        );
+        let child1_a = tree_a.add_child(tree_a.root, NodeData::simple_u64(1, "leaf"));
+        let _child2_a = tree_a.add_child(tree_a.root, NodeData::simple_u64(2, "leaf"));
 
         let mut tree_b: Tree<TestTypes> = Tree::new(NodeData::simple_u64(100, "root"));
-        let child1_b = tree_b.add_child(
-            tree_b.root,
-            NodeData::simple_leaf_u64(1, "leaf", "same".to_string()),
-        );
-        let _child2_b = tree_b.add_child(
-            tree_b.root,
-            NodeData::simple_leaf_u64(3, "leaf", "diff_b".to_string()),
-        );
+        let child1_b = tree_b.add_child(tree_b.root, NodeData::simple_u64(1, "leaf"));
+        let _child2_b = tree_b.add_child(tree_b.root, NodeData::simple_u64(3, "leaf"));
 
         let matching = compute_matching(&tree_a, &tree_b, &MatchingConfig::default());
 

@@ -15,6 +15,11 @@ use indexmap::IndexMap;
 use rapidhash::RapidHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use tendril::fmt::UTF8;
+use tendril::{Atomic, Tendril};
+
+/// String tendril with atomic refcounting (Send but not Sync)
+type Stem = Tendril<UTF8, Atomic>;
 
 use super::apply::{Content, Element};
 use super::{InsertContent, NodePath, NodeRef, Patch, PropChange};
@@ -44,16 +49,19 @@ impl std::fmt::Display for HtmlNodeKind {
 /// HTML element properties (attributes + text content).
 #[derive(Debug, Clone, Default)]
 pub struct HtmlProps {
-    /// Element attributes (preserves insertion order)
-    pub attrs: IndexMap<String, String>,
-    /// Text content (for text nodes)
-    pub text: Option<String>,
+    /// Attributes - keys and values are atomic Tendril (refcounted + Sync - cheap to clone)
+    /// IndexMap preserves insertion order for consistent serialization
+    #[allow(clippy::mutable_key_type)]
+    pub attrs: IndexMap<Stem, Stem>,
+    /// Text content (atomic Tendril is refcounted + Sync - cheap to clone)
+    pub text: Option<Stem>,
 }
 
 impl Properties for HtmlProps {
-    type Key = String;
-    type Value = String;
+    type Key = Stem;
+    type Value = Stem;
 
+    #[allow(clippy::mutable_key_type)]
     fn similarity(&self, other: &Self) -> f64 {
         // Text nodes: compare text content
         if let (Some(t1), Some(t2)) = (&self.text, &other.text) {
@@ -84,7 +92,7 @@ impl Properties for HtmlProps {
         // Diff text content - always include if present in final state
         if let Some(text) = &other.text {
             result.push(PropertyInFinalState {
-                key: "_text".to_string(),
+                key: Stem::from("_text"),
                 value: if self.text.as_ref() == Some(text) {
                     PropValue::Same
                 } else {
@@ -119,18 +127,17 @@ pub struct HtmlTreeTypes;
 
 impl TreeTypes for HtmlTreeTypes {
     type Kind = HtmlNodeKind;
-    type Label = NodePath; // Store path for each node
     type Props = HtmlProps;
 }
 
 /// Build a cinereus tree from an Element.
 pub fn build_tree(element: &Element) -> Tree<HtmlTreeTypes> {
-    let root_data = make_element_node_data(element, NodePath(vec![]));
+    let root_data = make_element_node_data(element);
     let mut tree = Tree::new(root_data);
 
     // Add children recursively
     let root = tree.root;
-    add_children(&mut tree, root, &element.children, NodePath(vec![]));
+    add_children(&mut tree, root, &element.children);
 
     // Recompute hashes bottom-up
     recompute_hashes(&mut tree);
@@ -154,7 +161,6 @@ pub fn build_tree_from_arena(doc: &arena_dom::Document) -> Tree<HtmlTreeTypes> {
     let root_data = NodeData {
         hash: NodeHash(0),
         kind: HtmlNodeKind::Element(body_tag.to_string()),
-        label: Some(NodePath(vec![])),
         properties: HtmlProps {
             attrs: IndexMap::new(),
             text: None,
@@ -165,7 +171,7 @@ pub fn build_tree_from_arena(doc: &arena_dom::Document) -> Tree<HtmlTreeTypes> {
     let tree_root = tree.root;
 
     // Add children from body
-    add_arena_children(&mut tree, tree_root, doc, body_id, NodePath(vec![]));
+    add_arena_children(&mut tree, tree_root, doc, body_id);
 
     // Recompute hashes bottom-up
     recompute_hashes(&mut tree);
@@ -178,15 +184,10 @@ fn add_arena_children(
     parent: indextree::NodeId,
     doc: &arena_dom::Document,
     arena_parent: indextree::NodeId,
-    parent_path: NodePath,
 ) {
     let children: Vec<_> = arena_parent.children(&doc.arena).collect();
 
-    for (i, child_id) in children.into_iter().enumerate() {
-        let mut child_path = parent_path.0.clone();
-        child_path.push(i);
-        let child_path = NodePath(child_path);
-
+    for child_id in children.into_iter() {
         let child_node = doc.get(child_id);
         match &child_node.kind {
             arena_dom::NodeKind::Element(elem) => {
@@ -195,29 +196,27 @@ fn add_arena_children(
                     attrs: elem
                         .attrs
                         .iter()
-                        .map(|(k, v)| (k.clone(), v.as_ref().to_string()))
+                        .map(|(k, v)| (Stem::from(k.as_str()), v.clone().into_send().into()))
                         .collect(),
                     text: None,
                 };
                 let data = NodeData {
                     hash: NodeHash(0),
                     kind,
-                    label: Some(child_path.clone()),
                     properties: props,
                 };
                 let node_id = tree.add_child(parent, data);
-                add_arena_children(tree, node_id, doc, child_id, child_path);
+                add_arena_children(tree, node_id, doc, child_id);
             }
             arena_dom::NodeKind::Text(text) => {
                 let kind = HtmlNodeKind::Text;
                 let props = HtmlProps {
                     attrs: IndexMap::new(),
-                    text: Some(text.as_ref().to_string()),
+                    text: Some(text.clone().into_send().into()),
                 };
                 let data = NodeData {
                     hash: NodeHash(0),
                     kind,
-                    label: Some(child_path),
                     properties: props,
                 };
                 tree.add_child(parent, data);
@@ -226,12 +225,11 @@ fn add_arena_children(
                 let kind = HtmlNodeKind::Comment;
                 let props = HtmlProps {
                     attrs: IndexMap::new(),
-                    text: Some(text.as_ref().to_string()),
+                    text: Some(text.clone().into_send().into()),
                 };
                 let data = NodeData {
                     hash: NodeHash(0),
                     kind,
-                    label: Some(child_path),
                     properties: props,
                 };
                 tree.add_child(parent, data);
@@ -243,76 +241,68 @@ fn add_arena_children(
     }
 }
 
-fn add_children(
-    tree: &mut Tree<HtmlTreeTypes>,
-    parent: NodeId,
-    children: &[Content],
-    parent_path: NodePath,
-) {
-    for (i, child) in children.iter().enumerate() {
-        let mut child_path = parent_path.0.clone();
-        child_path.push(i);
-        let child_path = NodePath(child_path);
-
+fn add_children(tree: &mut Tree<HtmlTreeTypes>, parent: NodeId, children: &[Content]) {
+    for child in children.iter() {
         match child {
             Content::Element(elem) => {
-                let data = make_element_node_data(elem, child_path.clone());
+                let data = make_element_node_data(elem);
                 let node_id = tree.add_child(parent, data);
-                add_children(tree, node_id, &elem.children, child_path);
+                add_children(tree, node_id, &elem.children);
             }
             Content::Text(text) => {
-                let data = make_text_node_data(text, child_path);
+                let data = make_text_node_data(text);
                 tree.add_child(parent, data);
             }
             Content::Comment(comment) => {
-                let data = make_comment_node_data(comment, child_path);
+                let data = make_comment_node_data(comment);
                 tree.add_child(parent, data);
             }
         }
     }
 }
 
-fn make_element_node_data(elem: &Element, path: NodePath) -> NodeData<HtmlTreeTypes> {
+fn make_element_node_data(elem: &Element) -> NodeData<HtmlTreeTypes> {
     let kind = HtmlNodeKind::Element(elem.tag.clone());
     let props = HtmlProps {
-        attrs: elem.attrs.clone(),
+        attrs: elem
+            .attrs
+            .iter()
+            .map(|(k, v)| (Stem::from(k.as_str()), Stem::from(v.as_str())))
+            .collect(),
         text: None,
     };
     // Hash will be recomputed later
     NodeData {
         hash: NodeHash(0),
         kind,
-        label: Some(path),
         properties: props,
     }
 }
 
-fn make_text_node_data(text: &str, path: NodePath) -> NodeData<HtmlTreeTypes> {
+fn make_text_node_data(text: &str) -> NodeData<HtmlTreeTypes> {
     let kind = HtmlNodeKind::Text;
     let props = HtmlProps {
         attrs: IndexMap::new(),
-        text: Some(text.to_string()),
+        text: Some(Stem::from(text)),
     };
     // Hash will be recomputed later
     NodeData {
         hash: NodeHash(0),
         kind,
-        label: Some(path),
         properties: props,
     }
 }
 
-fn make_comment_node_data(comment: &str, path: NodePath) -> NodeData<HtmlTreeTypes> {
+fn make_comment_node_data(comment: &str) -> NodeData<HtmlTreeTypes> {
     let kind = HtmlNodeKind::Comment;
     let props = HtmlProps {
         attrs: IndexMap::new(),
-        text: Some(comment.to_string()),
+        text: Some(Stem::from(comment)),
     };
     // Hash will be recomputed later
     NodeData {
         hash: NodeHash(0),
         kind,
-        label: Some(path),
         properties: props,
     }
 }
@@ -614,7 +604,6 @@ impl ShadowTree {
         let placeholder = self.arena.new_node(NodeData {
             hash: NodeHash(0),
             kind: HtmlNodeKind::Text,
-            label: None,
             properties: HtmlProps::default(),
         });
         node.insert_before(placeholder, &mut self.arena);
@@ -683,9 +672,8 @@ impl ShadowTree {
                 let placeholder = self.arena.new_node(NodeData {
                     hash: NodeHash(0),
                     kind: HtmlNodeKind::Text,
-                    label: None,
                     properties: HtmlProps {
-                        text: Some(String::new()),
+                        text: Some(Stem::new()),
                         attrs: IndexMap::new(),
                     },
                 });
@@ -834,10 +822,10 @@ fn convert_ops_with_shadow(
                 let prop_changes: Vec<PropChange> = changes
                     .into_iter()
                     .map(|c| PropChange {
-                        name: c.key,
+                        name: c.key.to_string(),
                         value: match c.value {
                             cinereus::tree::PropValue::Same => None,
-                            cinereus::tree::PropValue::Different(v) => Some(v),
+                            cinereus::tree::PropValue::Different(v) => Some(v.to_string()),
                         },
                     })
                     .collect();
@@ -866,7 +854,6 @@ fn convert_ops_with_shadow(
                 let new_data: NodeData<HtmlTreeTypes> = NodeData {
                     hash: NodeHash(0),
                     kind: kind.clone(),
-                    label: tree_b.get(node_b).label.clone(),
                     properties: tree_b.get(node_b).properties.clone(),
                 };
                 let new_node = shadow.arena.new_node(new_data);
@@ -902,7 +889,8 @@ fn convert_ops_with_shadow(
                             .properties
                             .text
                             .clone()
-                            .unwrap_or_default();
+                            .unwrap_or_default()
+                            .to_string();
                         result.push(Patch::InsertText {
                             at,
                             text,
@@ -915,7 +903,8 @@ fn convert_ops_with_shadow(
                             .properties
                             .text
                             .clone()
-                            .unwrap_or_default();
+                            .unwrap_or_default()
+                            .to_string();
                         result.push(Patch::InsertComment {
                             at,
                             text,
@@ -1066,7 +1055,7 @@ fn extract_content_from_tree_b(
         .properties
         .attrs
         .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
 
     // Get children
@@ -1095,11 +1084,21 @@ fn extract_content_from_tree_b(
                 });
             }
             HtmlNodeKind::Text => {
-                let text = child_data.properties.text.clone().unwrap_or_default();
+                let text = child_data
+                    .properties
+                    .text
+                    .clone()
+                    .unwrap_or_default()
+                    .to_string();
                 children.push(InsertContent::Text(text));
             }
             HtmlNodeKind::Comment => {
-                let text = child_data.properties.text.clone().unwrap_or_default();
+                let text = child_data
+                    .properties
+                    .text
+                    .clone()
+                    .unwrap_or_default()
+                    .to_string();
                 children.push(InsertContent::Comment(text));
             }
         }
