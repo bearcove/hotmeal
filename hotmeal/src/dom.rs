@@ -13,7 +13,7 @@ use html5ever::{local_name, ns};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use tendril::{StrTendril, TendrilSink};
+use tendril::StrTendril;
 
 use crate::diff::{DiffError, InsertContent, NodeRef, Patch, PropKey};
 use crate::{Stem, debug};
@@ -759,13 +759,24 @@ impl Namespace {
     }
 }
 
-/// Parse HTML into arena-based Document
-pub fn parse(html: &str) -> Document<'_> {
-    let sink = ArenaSink::new(html);
-    parse_document(sink, Default::default())
-        .from_utf8()
-        .read_from(&mut html.as_bytes())
-        .unwrap()
+/// Parse HTML from a StrTendril with zero-copy borrowing.
+///
+/// The returned Document borrows from the tendril's buffer, so substrings
+/// that don't need transformation will be borrowed rather than copied.
+///
+/// ```
+/// use hotmeal::{parse, StrTendril};
+///
+/// let input = StrTendril::from("<html><body>Hello</body></html>");
+/// let doc = parse(&input);
+/// // doc borrows from input - zero-copy for unchanged content
+/// ```
+pub fn parse(tendril: &StrTendril) -> Document<'_> {
+    use tendril::TendrilSink;
+
+    let input_ref: &str = tendril.as_ref();
+    let sink = ArenaSink::new(input_ref);
+    parse_document(sink, Default::default()).one(tendril.clone())
 }
 
 /// Owned element name wrapper
@@ -1070,10 +1081,15 @@ impl<'a> TreeSink for ArenaSink<'a> {
 mod tests {
     use super::*;
 
+    /// Helper to create a StrTendril from a string
+    fn t(s: &str) -> StrTendril {
+        StrTendril::from(s)
+    }
+
     #[test]
     fn test_parse_simple_html() {
-        let html = "<html><body><p>Hello</p></body></html>";
-        let doc = parse(html);
+        let html = t("<html><body><p>Hello</p></body></html>");
+        let doc = parse(&html);
 
         // Check root is <html>
         let root_data = doc.get(doc.root);
@@ -1110,7 +1126,7 @@ mod tests {
     #[test]
     fn test_parse_with_attributes() {
         let html = r#"<div class="container" id="main">Content</div>"#;
-        let full_html = format!("<html><body>{}</body></html>", html);
+        let full_html = t(&format!("<html><body>{}</body></html>", html));
         let doc = parse(&full_html);
 
         let body = doc.body().expect("should have body");
@@ -1145,8 +1161,8 @@ mod tests {
 
     #[test]
     fn test_parse_doctype() {
-        let html = "<!DOCTYPE html><html><body></body></html>";
-        let doc = parse(html);
+        let html = t("<!DOCTYPE html><html><body></body></html>");
+        let doc = parse(&html);
 
         assert!(doc.doctype.is_some());
         assert_eq!(doc.doctype.as_ref().map(|d| d.as_ref()), Some("html"));
@@ -1155,8 +1171,12 @@ mod tests {
     #[test]
     fn test_zero_copy_parsing() {
         // Verify that parsed strings borrow from the original input when possible
-        let html = "<html><body><p>Hello World</p></body></html>";
-        let doc = parse(html);
+        let html = t("<html><body><p>Hello World</p></body></html>");
+        let html_start = html.as_ref().as_ptr() as usize;
+        let html_end = html_start + html.len();
+        println!("Input range: {:#x}..{:#x}", html_start, html_end);
+
+        let doc = parse(&html);
 
         // Check that text nodes borrow from source
         let body = doc.body().expect("should have body");
@@ -1167,6 +1187,12 @@ mod tests {
         let text_node = p.children(&doc.arena).next().expect("p should have text");
 
         if let NodeKind::Text(stem) = &doc.get(text_node).kind {
+            let stem_str = stem.as_str();
+            let stem_start = stem_str.as_ptr() as usize;
+            let stem_end = stem_start + stem_str.len();
+            println!("Stem range: {:#x}..{:#x}", stem_start, stem_end);
+            println!("Stem variant: {:?}", matches!(stem, Stem::Borrowed(_)));
+
             // The text content should be the Borrowed variant
             assert!(
                 matches!(stem, Stem::Borrowed(_)),
@@ -1180,8 +1206,8 @@ mod tests {
 
     #[test]
     fn test_parse_nested_elements() {
-        let html = "<html><body><div><span>Text</span></div></body></html>";
-        let doc = parse(html);
+        let html = t("<html><body><div><span>Text</span></div></body></html>");
+        let doc = parse(&html);
 
         let body = doc.body().expect("should have body");
         let div = body
@@ -1206,8 +1232,8 @@ mod tests {
 
     #[test]
     fn test_parse_comment() {
-        let html = "<html><body><!-- This is a comment --></body></html>";
-        let doc = parse(html);
+        let html = t("<html><body><!-- This is a comment --></body></html>");
+        let doc = parse(&html);
 
         let body = doc.body().expect("should have body");
         let comment = body
@@ -1223,8 +1249,8 @@ mod tests {
 
     #[test]
     fn test_to_html() {
-        let html = "<html><body><div>Hello</div></body></html>";
-        let doc = parse(html);
+        let html = t("<html><body><div>Hello</div></body></html>");
+        let doc = parse(&html);
         assert_eq!(
             doc.to_html(),
             "<html><head></head><body><div>Hello</div></body></html>"
@@ -1233,8 +1259,8 @@ mod tests {
 
     #[test]
     fn test_to_html_with_attributes() {
-        let html = r#"<html><body><div class="container" id="main">Content</div></body></html>"#;
-        let doc = parse(html);
+        let html = t(r#"<html><body><div class="container" id="main">Content</div></body></html>"#);
+        let doc = parse(&html);
         let output = doc.to_html();
         assert!(output.contains("<html>"));
         assert!(output.contains("<body>"));
@@ -1246,8 +1272,8 @@ mod tests {
 
     #[test]
     fn test_to_html_escaping() {
-        let html = "<html><body><div>&lt;script&gt; &amp; \"quotes\"</div></body></html>";
-        let doc = parse(html);
+        let html = t("<html><body><div>&lt;script&gt; &amp; \"quotes\"</div></body></html>");
+        let doc = parse(&html);
         assert_eq!(
             doc.to_html(),
             "<html><head></head><body><div>&lt;script&gt; &amp; \"quotes\"</div></body></html>"
@@ -1256,8 +1282,8 @@ mod tests {
 
     #[test]
     fn test_to_html_void_elements() {
-        let html = "<html><body><br><img src=\"test.png\"></body></html>";
-        let doc = parse(html);
+        let html = t("<html><body><br><img src=\"test.png\"></body></html>");
+        let doc = parse(&html);
         let output = doc.to_html();
         assert!(output.contains("<html>"));
         assert!(output.contains("<br>"));
@@ -1270,17 +1296,17 @@ mod tests {
     #[test]
     fn test_apply_patches_roundtrip() {
         // Test that we can diff two arena_dom documents and apply patches
-        let old_html = "<html><body><div>Old content</div></body></html>";
-        let new_html = "<html><body><div>New content</div></body></html>";
+        let old_html = t("<html><body><div>Old content</div></body></html>");
+        let new_html = t("<html><body><div>New content</div></body></html>");
 
-        let old_doc = parse(old_html);
-        let new_doc = parse(new_html);
+        let old_doc = parse(&old_html);
+        let new_doc = parse(&new_html);
 
         // Generate patches
         let patches = crate::diff::diff(&old_doc, &new_doc).expect("diff should succeed");
 
         // Apply patches to a fresh copy of old
-        let mut mut_old_doc = parse(old_html);
+        let mut mut_old_doc = parse(&old_html);
         mut_old_doc
             .apply_patches(patches)
             .expect("patches should apply");
@@ -1291,15 +1317,15 @@ mod tests {
 
     #[test]
     fn test_apply_patches_insert_element() {
-        let old_html = "<html><body><div>First</div></body></html>";
-        let new_html = "<html><body><div>First</div><p>Second</p></body></html>";
+        let old_html = t("<html><body><div>First</div></body></html>");
+        let new_html = t("<html><body><div>First</div><p>Second</p></body></html>");
 
-        let old_doc = parse(old_html);
-        let new_doc = parse(new_html);
+        let old_doc = parse(&old_html);
+        let new_doc = parse(&new_html);
 
         let patches = crate::diff::diff(&old_doc, &new_doc).expect("diff failed");
 
-        let mut mut_old_doc = parse(old_html);
+        let mut mut_old_doc = parse(&old_html);
         mut_old_doc.apply_patches(patches).expect("apply failed");
 
         assert_eq!(mut_old_doc.to_html(), new_doc.to_html());

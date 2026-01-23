@@ -9,9 +9,10 @@
 //! # Example
 //!
 //! ```rust
-//! use hotmeal::{parse, NodeKind};
+//! use hotmeal::{parse, NodeKind, StrTendril};
 //!
-//! let doc = parse("<!DOCTYPE html><html><body><p>Hello!</p></body></html>");
+//! let input = StrTendril::from("<!DOCTYPE html><html><body><p>Hello!</p></body></html>");
+//! let doc = parse(&input);
 //! assert_eq!(doc.doctype.as_ref().map(|s| s.as_ref()), Some("html"));
 //!
 //! if let Some(body_id) = doc.body() {
@@ -40,6 +41,7 @@ pub use diff::{
 pub use dom::{Document, ElementData, Namespace, NodeData, NodeKind, parse};
 pub use html5ever::{LocalName, QualName, local_name, namespace_url, ns};
 pub use stem::Stem;
+pub use tendril::StrTendril;
 
 const _: () = {
     const fn assert_send<T: Send>() {}
