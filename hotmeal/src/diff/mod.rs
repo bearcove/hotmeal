@@ -24,7 +24,7 @@
 
 mod tree;
 
-pub use tree::{diff_arena_documents, diff_elements};
+pub use tree::diff_arena_documents;
 
 use crate::Stem;
 

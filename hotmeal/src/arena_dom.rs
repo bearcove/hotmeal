@@ -33,6 +33,46 @@ pub struct Document {
 }
 
 impl Document {
+    /// Create an empty document with just `<html><head></head><body></body></html>`
+    pub fn new() -> Self {
+        let mut arena = Arena::new();
+
+        // Create html element
+        let html = arena.new_node(NodeData {
+            kind: NodeKind::Element(ElementData {
+                tag: Stem::from("html"),
+                attrs: IndexMap::new(),
+            }),
+            ns: Namespace::Html,
+        });
+
+        // Create head element
+        let head = arena.new_node(NodeData {
+            kind: NodeKind::Element(ElementData {
+                tag: Stem::from("head"),
+                attrs: IndexMap::new(),
+            }),
+            ns: Namespace::Html,
+        });
+        html.append(head, &mut arena);
+
+        // Create body element
+        let body = arena.new_node(NodeData {
+            kind: NodeKind::Element(ElementData {
+                tag: Stem::from("body"),
+                attrs: IndexMap::new(),
+            }),
+            ns: Namespace::Html,
+        });
+        html.append(body, &mut arena);
+
+        Document {
+            arena,
+            root: html,
+            doctype: None,
+        }
+    }
+
     /// Get immutable reference to node data
     pub fn get(&self, id: NodeId) -> &NodeData {
         self.arena[id].get()
@@ -70,6 +110,114 @@ impl Document {
         })
     }
 
+    // ==================== DOM Manipulation API ====================
+
+    /// Create an element node (not yet attached to the tree)
+    pub fn create_element(&mut self, tag: impl Into<Stem>) -> NodeId {
+        self.arena.new_node(NodeData {
+            kind: NodeKind::Element(ElementData {
+                tag: tag.into(),
+                attrs: IndexMap::new(),
+            }),
+            ns: Namespace::Html,
+        })
+    }
+
+    /// Create a text node (not yet attached to the tree)
+    pub fn create_text(&mut self, text: impl Into<Stem>) -> NodeId {
+        self.arena.new_node(NodeData {
+            kind: NodeKind::Text(text.into()),
+            ns: Namespace::Html,
+        })
+    }
+
+    /// Create a comment node (not yet attached to the tree)
+    pub fn create_comment(&mut self, text: impl Into<Stem>) -> NodeId {
+        self.arena.new_node(NodeData {
+            kind: NodeKind::Comment(text.into()),
+            ns: Namespace::Html,
+        })
+    }
+
+    /// Append a child node to a parent
+    pub fn append_child(&mut self, parent: NodeId, child: NodeId) {
+        parent.append(child, &mut self.arena);
+    }
+
+    /// Insert a node before a sibling
+    pub fn insert_before(&mut self, sibling: NodeId, new_node: NodeId) {
+        sibling.insert_before(new_node, &mut self.arena);
+    }
+
+    /// Insert a node after a sibling
+    pub fn insert_after(&mut self, sibling: NodeId, new_node: NodeId) {
+        sibling.insert_after(new_node, &mut self.arena);
+    }
+
+    /// Remove a node from its parent (node remains in arena but detached)
+    pub fn remove(&mut self, node: NodeId) {
+        node.detach(&mut self.arena);
+    }
+
+    /// Set an attribute on an element
+    pub fn set_attr(&mut self, element: NodeId, name: impl Into<Stem>, value: impl Into<Stem>) {
+        if let NodeKind::Element(elem) = &mut self.arena[element].get_mut().kind {
+            elem.attrs.insert(name.into(), value.into());
+        }
+    }
+
+    /// Remove an attribute from an element
+    pub fn remove_attr(&mut self, element: NodeId, name: &Stem) {
+        if let NodeKind::Element(elem) = &mut self.arena[element].get_mut().kind {
+            elem.attrs.shift_remove(name);
+        }
+    }
+
+    /// Set the text content of a text node
+    pub fn set_text(&mut self, node: NodeId, text: impl Into<Stem>) {
+        if let NodeKind::Text(t) = &mut self.arena[node].get_mut().kind {
+            *t = text.into();
+        }
+    }
+
+    /// Get parent of a node
+    pub fn parent(&self, node: NodeId) -> Option<NodeId> {
+        self.arena[node].parent()
+    }
+
+    /// Get first child of a node
+    pub fn first_child(&self, node: NodeId) -> Option<NodeId> {
+        node.children(&self.arena).next()
+    }
+
+    /// Get last child of a node
+    pub fn last_child(&self, node: NodeId) -> Option<NodeId> {
+        node.children(&self.arena).next_back()
+    }
+
+    /// Get next sibling of a node
+    pub fn next_sibling(&self, node: NodeId) -> Option<NodeId> {
+        self.arena[node].next_sibling()
+    }
+
+    /// Get previous sibling of a node
+    pub fn prev_sibling(&self, node: NodeId) -> Option<NodeId> {
+        self.arena[node].previous_sibling()
+    }
+
+    /// Count children of a node
+    pub fn child_count(&self, node: NodeId) -> usize {
+        node.children(&self.arena).count()
+    }
+}
+
+impl Default for Document {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Document {
     /// Serialize to HTML string (body content only, no doctype)
     pub fn to_html(&self) -> String {
         let mut output = String::new();

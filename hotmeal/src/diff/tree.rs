@@ -5,7 +5,11 @@
 
 #[allow(unused_imports)]
 use crate::trace;
-use crate::{Stem, debug};
+use crate::{
+    Stem,
+    arena_dom::{Document, NodeKind},
+    debug,
+};
 use cinereus::{
     EditOp, Matching, MatchingConfig, NodeData, NodeHash, PropValue, Properties,
     PropertyInFinalState, Tree, TreeTypes,
@@ -126,13 +130,13 @@ impl TreeTypes for HtmlTreeTypes {
 }
 
 /// Build a cinereus tree from an arena_dom::Document (body content only).
-pub fn build_tree_from_arena(doc: &arena_dom::Document) -> Tree<HtmlTreeTypes> {
+pub fn build_tree_from_arena(doc: &Document) -> Tree<HtmlTreeTypes> {
     // Find body element
     let body_id = doc.body().expect("document must have body");
     let body_node = doc.get(body_id);
 
     // Create root as body element
-    let body_tag = if let arena_dom::NodeKind::Element(elem) = &body_node.kind {
+    let body_tag = if let NodeKind::Element(elem) = &body_node.kind {
         elem.tag.clone()
     } else {
         panic!("body must be an element");
@@ -162,7 +166,7 @@ pub fn build_tree_from_arena(doc: &arena_dom::Document) -> Tree<HtmlTreeTypes> {
 fn add_arena_children(
     tree: &mut Tree<HtmlTreeTypes>,
     parent: indextree::NodeId,
-    doc: &arena_dom::Document,
+    doc: &Document,
     arena_parent: indextree::NodeId,
 ) {
     let children: Vec<_> = arena_parent.children(&doc.arena).collect();
@@ -170,13 +174,13 @@ fn add_arena_children(
     for child_id in children.into_iter() {
         let child_node = doc.get(child_id);
         match &child_node.kind {
-            arena_dom::NodeKind::Element(elem) => {
+            NodeKind::Element(elem) => {
                 let kind = HtmlNodeKind::Element(elem.tag.clone());
                 let props = HtmlProps {
                     attrs: elem
                         .attrs
                         .iter()
-                        .map(|(k, v)| (Stem::from(k.as_str()), v.clone().into_send().into()))
+                        .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
                     text: None,
                 };
@@ -188,7 +192,7 @@ fn add_arena_children(
                 let node_id = tree.add_child(parent, data);
                 add_arena_children(tree, node_id, doc, child_id);
             }
-            arena_dom::NodeKind::Text(text) => {
+            NodeKind::Text(text) => {
                 let kind = HtmlNodeKind::Text;
                 let props = HtmlProps {
                     attrs: IndexMap::new(),
@@ -201,7 +205,7 @@ fn add_arena_children(
                 };
                 tree.add_child(parent, data);
             }
-            arena_dom::NodeKind::Comment(text) => {
+            NodeKind::Comment(text) => {
                 let kind = HtmlNodeKind::Comment;
                 let props = HtmlProps {
                     attrs: IndexMap::new(),
@@ -214,7 +218,7 @@ fn add_arena_children(
                 };
                 tree.add_child(parent, data);
             }
-            arena_dom::NodeKind::Document => {
+            NodeKind::Document => {
                 // Skip document nodes
             }
         }
@@ -254,6 +258,7 @@ fn make_comment_node_data(comment: &str) -> NodeData<HtmlTreeTypes> {
 /// IMPORTANT: Properties (attributes, text content) are NOT included in the hash.
 /// The hash only captures the structural identity: node kind + children structure.
 /// Properties are compared separately via the Properties trait after matching.
+/// FIXME: I'm not sure that's such a good idea — amos
 fn recompute_hashes(tree: &mut Tree<HtmlTreeTypes>) {
     // Process in post-order (children before parents)
     let nodes: Vec<NodeId> = tree.post_order().collect();
@@ -281,69 +286,8 @@ fn recompute_hashes(tree: &mut Tree<HtmlTreeTypes>) {
     }
 }
 
-/// Compute diff between two elements and return patches.
-pub fn diff_elements(old: &Element, new: &Element) -> Result<Vec<Patch>, String> {
-    let tree_a = build_tree(old);
-    let tree_b = build_tree(new);
-
-    #[cfg(test)]
-    {
-        trace!(
-            "tree_a: root hash={:?}, kind={:?}",
-            tree_a.get(tree_a.root).hash,
-            tree_a.get(tree_a.root).kind
-        );
-        trace!(
-            "tree_b: root hash={:?}, kind={:?}",
-            tree_b.get(tree_b.root).hash,
-            tree_b.get(tree_b.root).kind
-        );
-    }
-
-    let config = MatchingConfig {
-        min_height: 0, // Include all nodes including leaves in top-down matching
-        ..MatchingConfig::default()
-    };
-
-    // Compute initial matching
-    let mut matching = cinereus::compute_matching(&tree_a, &tree_b, &config);
-
-    // IMPORTANT: For HTML diffing, always match the roots if they have the same tag.
-    // Without this, when roots have different child counts (e.g., body with 1 child
-    // vs body with 0 children), they won't match due to different hashes, causing
-    // cinereus to generate a Delete for the entire tree_a root, which is invalid.
-    let root_a = tree_a.get(tree_a.root);
-    let root_b = tree_b.get(tree_b.root);
-    if root_a.kind == root_b.kind && !matching.contains_a(tree_a.root) {
-        matching.add(tree_a.root, tree_b.root);
-    }
-
-    // Generate edit script with the matching (including forced root match)
-    let edit_ops = cinereus::generate_edit_script(&tree_a, &tree_b, &matching);
-    #[cfg(test)]
-    {
-        debug!("matching pairs: {}", matching.len());
-        for (a, b) in matching.pairs() {
-            trace!("  matched: {:?} <-> {:?}", a, b);
-        }
-        trace!("edit_ops: {:?}", edit_ops);
-    }
-
-    debug!(
-        ops_count = edit_ops.len(),
-        matched_pairs = matching.len(),
-        "cinereus diff complete"
-    );
-
-    // Convert cinereus ops to patches using shadow tree approach
-    convert_ops_with_shadow(edit_ops, &tree_a, &tree_b, &matching)
-}
-
 /// Compute diff between two arena_dom::Documents and return patches.
-pub fn diff_arena_documents(
-    old: &arena_dom::Document,
-    new: &arena_dom::Document,
-) -> Result<Vec<Patch>, String> {
+pub fn diff_arena_documents(old: &Document, new: &Document) -> Result<Vec<Patch>, String> {
     let tree_a = build_tree_from_arena(old);
     let tree_b = build_tree_from_arena(new);
 
@@ -764,10 +708,10 @@ fn convert_ops_with_shadow(
                 let prop_changes: Vec<PropChange> = changes
                     .into_iter()
                     .map(|c| PropChange {
-                        name: c.key.to_string(),
+                        name: c.key,
                         value: match c.value {
                             cinereus::tree::PropValue::Same => None,
-                            cinereus::tree::PropValue::Different(v) => Some(v.to_string()),
+                            cinereus::tree::PropValue::Different(v) => Some(v),
                         },
                     })
                     .collect();
@@ -1052,45 +996,35 @@ fn extract_content_from_tree_b(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arena_dom;
     use facet_testhelpers::test;
 
     #[test]
     fn test_build_tree_simple() {
-        let elem = Element {
-            tag: "div".to_string(),
-            attrs: IndexMap::new(),
-            children: vec![Content::Text("hello".to_string())],
-        };
+        let doc = arena_dom::parse("<html><body><div>hello</div></body></html>");
+        let tree = build_tree_from_arena(&doc);
 
-        let tree = build_tree(&elem);
-
-        // Root is div element
+        // Root is body element (build_tree_from_arena uses body as root)
         let root_data = tree.get(tree.root);
-        assert!(matches!(root_data.kind, HtmlNodeKind::Element(ref t) if t == "div"));
+        assert!(matches!(&root_data.kind, HtmlNodeKind::Element(t) if t.as_ref() == "body"));
 
-        // One child (text)
+        // One child (div)
         assert_eq!(tree.child_count(tree.root), 1);
     }
 
     #[test]
     fn test_diff_text_change() {
-        let old = Element {
-            tag: "div".to_string(),
-            attrs: IndexMap::new(),
-            children: vec![Content::Text("old".to_string())],
-        };
-        let new = Element {
-            tag: "div".to_string(),
-            attrs: IndexMap::new(),
-            children: vec![Content::Text("new".to_string())],
-        };
+        let old_html = "<html><body><div>old</div></body></html>";
+        let new_html = "<html><body><div>new</div></body></html>";
 
-        let patches = diff_elements(&old, &new).unwrap();
+        let old = arena_dom::parse(old_html);
+        let new = arena_dom::parse(new_html);
+        let patches = diff_arena_documents(&old, &new).unwrap();
 
         // Should have an UpdateProps patch for the text change
         let has_text_update = patches.iter().any(|p| {
             matches!(p, Patch::UpdateProps { changes, .. }
-                if changes.iter().any(|c| c.name == "_text"))
+                if changes.iter().any(|c| c.name.as_ref() == "_text"))
         });
         assert!(
             has_text_update,
@@ -1101,28 +1035,16 @@ mod tests {
 
     #[test]
     fn test_diff_attr_change() {
-        let mut old_attrs = IndexMap::new();
-        old_attrs.insert("class".to_string(), "foo".to_string());
+        let old_html = r#"<html><body><div class="foo"></div></body></html>"#;
+        let new_html = r#"<html><body><div class="bar"></div></body></html>"#;
 
-        let mut new_attrs = IndexMap::new();
-        new_attrs.insert("class".to_string(), "bar".to_string());
-
-        let old = Element {
-            tag: "div".to_string(),
-            attrs: old_attrs,
-            children: vec![],
-        };
-        let new = Element {
-            tag: "div".to_string(),
-            attrs: new_attrs,
-            children: vec![],
-        };
-
-        let patches = diff_elements(&old, &new).unwrap();
+        let old = arena_dom::parse(old_html);
+        let new = arena_dom::parse(new_html);
+        let patches = diff_arena_documents(&old, &new).unwrap();
 
         let has_attr_update = patches.iter().any(|p| {
             matches!(p, Patch::UpdateProps { changes, .. }
-                if changes.iter().any(|c| c.name == "class"))
+                if changes.iter().any(|c| c.name.as_ref() == "class"))
         });
         assert!(
             has_attr_update,
@@ -1134,67 +1056,42 @@ mod tests {
     #[test]
     fn test_diff_remove_all_children() {
         // Reproduce fuzzer failure: body with child -> body with no children
-        let old = Element {
-            tag: "body".to_string(),
-            attrs: IndexMap::new(),
-            children: vec![Content::Element(Element {
-                tag: "span".to_string(),
-                attrs: IndexMap::new(),
-                children: vec![],
-            })],
-        };
-        let new = Element {
-            tag: "body".to_string(),
-            attrs: IndexMap::new(),
-            children: vec![],
-        };
+        let old_html = "<html><body><span></span></body></html>";
+        let new_html = "<html><body></body></html>";
 
-        let patches = diff_elements(&old, &new).unwrap();
+        let old = arena_dom::parse(old_html);
+        let new = arena_dom::parse(new_html);
+        let patches = diff_arena_documents(&old, &new).unwrap();
         debug!("Patches: {:#?}", patches);
 
         // Should be able to apply the patches
-        let mut tree = old.clone();
-        super::super::apply::apply_patches(&mut tree, &patches).expect("apply should succeed");
+        let mut doc = arena_dom::parse(old_html);
+        doc.apply_patches(patches).expect("apply should succeed");
 
-        // Result HTML should match new HTML (Chawathe semantics use empty text placeholders,
-        // so we compare serialized output rather than tree structure)
-        assert_eq!(tree.to_html(), new.to_html(), "HTML output should match");
+        let result = doc.to_html();
+        let expected = arena_dom::parse(new_html).to_html();
+        assert_eq!(result, expected, "HTML output should match");
     }
 
     #[test]
     fn test_diff_complex_fuzzer_case() {
         // Fuzzer found: <body><strong>old_text</strong></body> -> <body>new_text<strong>updated</strong></body>
-        let old = Element {
-            tag: "body".to_string(),
-            attrs: IndexMap::new(),
-            children: vec![Content::Element(Element {
-                tag: "strong".to_string(),
-                attrs: IndexMap::new(),
-                children: vec![Content::Text("old".to_string())],
-            })],
-        };
-        let new = Element {
-            tag: "body".to_string(),
-            attrs: IndexMap::new(),
-            children: vec![
-                Content::Text("new_text".to_string()),
-                Content::Element(Element {
-                    tag: "strong".to_string(),
-                    attrs: IndexMap::new(),
-                    children: vec![Content::Text("updated".to_string())],
-                }),
-            ],
-        };
+        let old_html = "<html><body><strong>old</strong></body></html>";
+        let new_html = "<html><body>new_text<strong>updated</strong></body></html>";
 
-        let patches = diff_elements(&old, &new).unwrap();
+        let old = arena_dom::parse(old_html);
+        let new = arena_dom::parse(new_html);
+        let patches = diff_arena_documents(&old, &new).unwrap();
         debug!("Patches: {:#?}", patches);
 
-        let mut tree = old.clone();
-        super::super::apply::apply_patches(&mut tree, &patches).expect("apply should succeed");
+        let mut doc = arena_dom::parse(old_html);
+        doc.apply_patches(patches).expect("apply should succeed");
 
-        debug!("Result: {}", tree.to_html());
-        debug!("Expected: {}", new.to_html());
-        assert_eq!(tree.to_html(), new.to_html(), "HTML output should match");
+        let result = doc.to_html();
+        let expected = arena_dom::parse(new_html).to_html();
+        debug!("Result: {}", result);
+        debug!("Expected: {}", expected);
+        assert_eq!(result, expected, "HTML output should match");
     }
 
     #[test]
@@ -1202,49 +1099,23 @@ mod tests {
         // Actual fuzzer crash case (simplified):
         // Old: <strong>text1</strong><strong>text2</strong><img>
         // New: text3<strong>text4</strong>
-        let old = Element {
-            tag: "body".to_string(),
-            attrs: IndexMap::new(),
-            children: vec![
-                Content::Element(Element {
-                    tag: "strong".to_string(),
-                    attrs: IndexMap::new(),
-                    children: vec![Content::Text("text1".to_string())],
-                }),
-                Content::Element(Element {
-                    tag: "strong".to_string(),
-                    attrs: IndexMap::new(),
-                    children: vec![Content::Text("text2".to_string())],
-                }),
-                Content::Element(Element {
-                    tag: "img".to_string(),
-                    attrs: IndexMap::new(),
-                    children: vec![],
-                }),
-            ],
-        };
-        let new = Element {
-            tag: "body".to_string(),
-            attrs: IndexMap::new(),
-            children: vec![
-                Content::Text("text3".to_string()),
-                Content::Element(Element {
-                    tag: "strong".to_string(),
-                    attrs: IndexMap::new(),
-                    children: vec![Content::Text("text4".to_string())],
-                }),
-            ],
-        };
+        let old_html =
+            "<html><body><strong>text1</strong><strong>text2</strong><img></body></html>";
+        let new_html = "<html><body>text3<strong>text4</strong></body></html>";
 
-        let patches = diff_elements(&old, &new).unwrap();
+        let old = arena_dom::parse(old_html);
+        let new = arena_dom::parse(new_html);
+        let patches = diff_arena_documents(&old, &new).unwrap();
         debug!("Patches: {:#?}", patches);
 
-        let mut tree = old.clone();
-        super::super::apply::apply_patches(&mut tree, &patches).expect("apply should succeed");
+        let mut doc = arena_dom::parse(old_html);
+        doc.apply_patches(patches).expect("apply should succeed");
 
-        debug!("Result: {}", tree.to_html());
-        debug!("Expected: {}", new.to_html());
-        assert_eq!(tree.to_html(), new.to_html(), "HTML output should match");
+        let result = doc.to_html();
+        let expected = arena_dom::parse(new_html).to_html();
+        debug!("Result: {}", result);
+        debug!("Expected: {}", expected);
+        assert_eq!(result, expected, "HTML output should match");
     }
 
     #[test]
