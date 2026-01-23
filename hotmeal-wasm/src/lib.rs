@@ -367,49 +367,34 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             // None means keep existing - do nothing
 
             // Handle element attribute updates
-            // The changes vec represents the ENTIRE final attribute state
+            // The changes vec represents the ENTIRE final attribute state in order
             if let Some(el) = node.dyn_ref::<Element>() {
-                // Collect attribute names in changes (excluding Text)
-                let final_attrs: std::collections::HashSet<String> = changes
-                    .iter()
-                    .filter_map(|c| {
-                        if let PropKey::Attr(ref qual_name) = c.name {
-                            Some(if let Some(ref prefix) = qual_name.prefix {
-                                format!("{}:{}", prefix, qual_name.local)
-                            } else {
-                                qual_name.local.to_string()
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+                // Save existing attribute values (for None = keep existing)
+                let existing: std::collections::HashMap<String, String> =
+                    (0..el.attributes().length())
+                        .filter_map(|i| el.attributes().item(i).map(|a| (a.name(), a.value())))
+                        .collect();
 
-                // Remove attributes not in final state
-                let current_attrs: Vec<String> = (0..el.attributes().length())
-                    .filter_map(|i| el.attributes().item(i).map(|a| a.name()))
-                    .collect();
-
-                for attr_name in current_attrs {
-                    if !final_attrs.contains(&attr_name) {
-                        el.remove_attribute(&attr_name)?;
-                    }
+                // Remove ALL existing attributes first to preserve order
+                for attr_name in existing.keys() {
+                    el.remove_attribute(attr_name)?;
                 }
 
-                // Set attributes from changes
+                // Re-add attributes in the order specified by changes
                 for change in changes {
-                    if let PropKey::Attr(ref qual_name) = change.name
-                        && let Some(new_value) = &change.value
-                    {
-                        // Different value - update it
+                    if let PropKey::Attr(ref qual_name) = change.name {
                         let attr_name = if let Some(ref prefix) = qual_name.prefix {
                             format!("{}:{}", prefix, qual_name.local)
                         } else {
                             qual_name.local.to_string()
                         };
-                        el.set_attribute(&attr_name, new_value.as_ref())?;
+                        // Use new value if Some, otherwise keep existing
+                        let value = match &change.value {
+                            Some(v) => v.as_ref().to_string(),
+                            None => existing.get(&attr_name).cloned().unwrap_or_default(),
+                        };
+                        el.set_attribute(&attr_name, &value)?;
                     }
-                    // None means keep existing - do nothing (attribute already exists)
                 }
             }
         }
