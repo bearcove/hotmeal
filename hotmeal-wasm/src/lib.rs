@@ -11,7 +11,7 @@
 //! target position into a numbered slot. The DOM's `replaceChild` method
 //! provides atomic displacement, returning the removed node for storage.
 
-use hotmeal::{InsertContent, NodeId, parse};
+use hotmeal::{InsertContent, NodeId, PropKey, parse};
 use tracing::{debug, trace};
 use wasm_bindgen::prelude::*;
 use web_sys::{Document, Element, Node};
@@ -115,12 +115,24 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
 
         Patch::SetAttribute { path, name, value } => {
             let el = find_element(doc, path, slots)?;
-            el.set_attribute(name, value)?;
+            // Convert QualName to attribute name string
+            let attr_name = if let Some(ref prefix) = name.prefix {
+                format!("{}:{}", prefix, name.local)
+            } else {
+                name.local.to_string()
+            };
+            el.set_attribute(&attr_name, value)?;
         }
 
         Patch::RemoveAttribute { path, name } => {
             let el = find_element(doc, path, slots)?;
-            el.remove_attribute(name)?;
+            // Convert QualName to attribute name string
+            let attr_name = if let Some(ref prefix) = name.prefix {
+                format!("{}:{}", prefix, name.local)
+            } else {
+                name.local.to_string()
+            };
+            el.remove_attribute(&attr_name)?;
         }
 
         Patch::Remove { node } => {
@@ -206,8 +218,14 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             let new_el = doc.create_element(tag)?;
 
             // Set attributes
-            for (name, value) in attrs {
-                new_el.set_attribute(name, value)?;
+            for attr in attrs {
+                // Convert QualName to attribute name string
+                let attr_name = if let Some(ref prefix) = attr.name.prefix {
+                    format!("{}:{}", prefix, attr.name.local)
+                } else {
+                    attr.name.local.to_string()
+                };
+                new_el.set_attribute(&attr_name, &attr.value)?;
             }
 
             // Add children
@@ -379,7 +397,7 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             let node = find_node(doc, path, slots)?;
 
             // Handle text content updates
-            if let Some(text_change) = changes.iter().find(|c| c.name.as_ref() == "_text")
+            if let Some(text_change) = changes.iter().find(|c| matches!(c.name, PropKey::Text))
                 && let Some(v) = &text_change.value
             {
                 node.set_text_content(Some(v));
@@ -389,11 +407,20 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             // Handle element attribute updates
             // The changes vec represents the ENTIRE final attribute state
             if let Some(el) = node.dyn_ref::<Element>() {
-                // Collect attribute names in changes (excluding _text)
-                let final_attrs: std::collections::HashSet<&str> = changes
+                // Collect attribute names in changes (excluding Text)
+                let final_attrs: std::collections::HashSet<String> = changes
                     .iter()
-                    .filter(|c| c.name.as_ref() != "_text")
-                    .map(|c| c.name.as_ref())
+                    .filter_map(|c| {
+                        if let PropKey::Attr(ref qual_name) = c.name {
+                            Some(if let Some(ref prefix) = qual_name.prefix {
+                                format!("{}:{}", prefix, qual_name.local)
+                            } else {
+                                qual_name.local.to_string()
+                            })
+                        } else {
+                            None
+                        }
+                    })
                     .collect();
 
                 // Remove attributes not in final state
@@ -402,18 +429,23 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
                     .collect();
 
                 for attr_name in current_attrs {
-                    if !final_attrs.contains(attr_name.as_str()) {
+                    if !final_attrs.contains(&attr_name) {
                         el.remove_attribute(&attr_name)?;
                     }
                 }
 
                 // Set attributes from changes
                 for change in changes {
-                    if change.name.as_ref() != "_text"
+                    if let PropKey::Attr(ref qual_name) = change.name
                         && let Some(new_value) = &change.value
                     {
                         // Different value - update it
-                        el.set_attribute(change.name.as_ref(), new_value.as_ref())?;
+                        let attr_name = if let Some(ref prefix) = qual_name.prefix {
+                            format!("{}:{}", prefix, qual_name.local)
+                        } else {
+                            qual_name.local.to_string()
+                        };
+                        el.set_attribute(&attr_name, new_value.as_ref())?;
                     }
                     // None means keep existing - do nothing (attribute already exists)
                 }
@@ -560,8 +592,14 @@ fn create_insert_content(doc: &Document, content: &InsertContent) -> Result<Node
             children,
         } => {
             let el = doc.create_element(tag)?;
-            for (name, value) in attrs {
-                el.set_attribute(name, value)?;
+            for attr in attrs {
+                // Convert QualName to attribute name string
+                let attr_name = if let Some(ref prefix) = attr.name.prefix {
+                    format!("{}:{}", prefix, attr.name.local)
+                } else {
+                    attr.name.local.to_string()
+                };
+                el.set_attribute(&attr_name, &attr.value)?;
             }
             for child in children {
                 let child_node = create_insert_content(doc, child)?;
