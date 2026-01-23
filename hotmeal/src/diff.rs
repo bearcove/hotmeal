@@ -388,19 +388,23 @@ struct DiffNodeData<'a> {
 ///
 /// This allows diffing Documents directly without building a separate cinereus Tree.
 /// The wrapper pre-computes hashes and caches kind/props for each node.
-pub struct DiffableDocument<'a> {
-    doc: &'a Document<'a>,
+///
+/// Two lifetime parameters:
+/// - `'b` - how long we borrow the Document
+/// - `'a` - the lifetime of data inside the Document (Stem<'a> values from original input)
+pub struct DiffableDocument<'b, 'a> {
+    doc: &'b Document<'a>,
     /// The root for diffing (body element)
     body_id: NodeId,
     /// Pre-computed diff data indexed by NodeId
     nodes: HashMap<NodeId, DiffNodeData<'a>>,
 }
 
-impl<'a> DiffableDocument<'a> {
+impl<'b, 'a> DiffableDocument<'b, 'a> {
     /// Create a new DiffableDocument from a Document.
     ///
     /// Pre-computes hashes and caches kind/props for all body descendants.
-    pub fn new(doc: &'a Document<'a>) -> Self {
+    pub fn new(doc: &'b Document<'a>) -> Self {
         let body_id = doc.body().expect("document must have body");
         // Pre-allocate based on arena size (upper bound for descendants)
         let mut nodes = HashMap::with_capacity(doc.arena.count());
@@ -497,7 +501,7 @@ impl<'a> DiffableDocument<'a> {
     }
 }
 
-impl<'a> DiffTree for DiffableDocument<'a> {
+impl<'b, 'a> DiffTree for DiffableDocument<'b, 'a> {
     type Types = HtmlTreeTypes<'a>;
 
     fn root(&self) -> NodeId {
