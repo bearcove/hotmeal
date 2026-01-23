@@ -1,6 +1,6 @@
 # Hotmeal Benchmark Results - Arena + Tendril Implementation
 
-Run date: 2026-01-23 (updated after slot-based path refactoring)
+Run date: 2026-01-23 (updated after lazy descendant optimization)
 Machine: Apple M-series (aarch64-apple-darwin)
 Timer precision: 41 ns
 Implementation: Arena DOM + Tendril<UTF8, Atomic> strings (no rayon)
@@ -19,15 +19,16 @@ Implementation: Arena DOM + Tendril<UTF8, Atomic> strings (no rayon)
 ### Key Wins
 - **Parsing: 26-45% faster** across all document sizes vs original baseline
 - **Serialization: 58-68% faster** on medium/large documents
-- **Hot-reload (xlarge): 27% faster** (15.76ms → 11.49ms)
-- **Small docs: 76% faster** hot-reload (149µs → 35.1µs)
-- **Diff computation: improved** significantly with recent optimizations
+- **Hot-reload (xlarge): 44% faster** (15.76ms → 8.88ms) vs original baseline
+- **Small docs: 76% faster** hot-reload (149µs → 35µs)
+- **Diff computation: 50% faster** on large docs with lazy descendant optimization
 
-### Recent Improvements (this run vs previous)
-- **Diff-only xlarge: 8% faster** (5.712ms → 5.27ms)
-- **Hot-reload medium: 7% faster** (7.112ms → 6.607ms)
-- **Hot-reload large: 10% faster** (7.933ms → 7.177ms)
-- **Hot-reload xlarge: 9% faster** (12.58ms → 11.49ms)
+### Recent Improvements (lazy descendant map)
+- **Diff-only xlarge: 51% faster** (5.27ms → 2.61ms)
+- **Diff-only large: 50% faster** (3.56ms → 1.78ms)
+- **Hot-reload medium: 14% faster** (6.61ms → 5.67ms)
+- **Hot-reload large: 24% faster** (7.18ms → 5.45ms)
+- **Hot-reload xlarge: 23% faster** (11.49ms → 8.88ms)
 
 ## Benchmark Results
 
@@ -69,20 +70,20 @@ Measures pure diff computation with pre-parsed DOMs:
 
 | Test | Fastest | Median | Mean | vs Baseline | vs Previous Run |
 |------|---------|--------|------|-------------|-----------------|
-| diff_only_small | 4.082 µs | 4.291 µs | **4.38 µs** | 93% faster (was 66.22 µs) | 13% faster |
-| diff_only_medium | 3.571 ms | 3.75 ms | **3.781 ms** | 42% slower (was 2.667 ms) | 3% faster |
-| diff_only_large | 3.383 ms | 3.546 ms | **3.562 ms** | 35% slower (was 2.648 ms) | 7% faster |
-| diff_only_xlarge | 5.007 ms | 5.254 ms | **5.27 ms** | 9% slower (was 4.844 ms) | 8% faster |
+| diff_only_small | 3.124 µs | 3.332 µs | **3.44 µs** | 95% faster (was 66.22 µs) | 22% faster |
+| diff_only_medium | 2.566 ms | 2.697 ms | **2.69 ms** | same as baseline (2.667 ms) | 29% faster |
+| diff_only_large | 1.674 ms | 1.752 ms | **1.78 ms** | 33% faster (was 2.648 ms) | 50% faster |
+| diff_only_xlarge | 2.455 ms | 2.571 ms | **2.61 ms** | 46% faster (was 4.844 ms) | 51% faster |
 
-**Why slower on large docs vs original baseline?**
-- Removed rayon parallelization (needed to drop `Sync` requirement for Tendril)
-- `precompute_descendants` now runs sequentially instead of in parallel
-- Small docs are much faster (simpler traversal, less overhead)
+**Lazy descendant optimization:**
+- Replaced eager O(n²) `precompute_descendants` with lazy on-demand computation
+- Only computes descendant sets for nodes actually compared via dice_coefficient
+- Uses `rapidhash` for fast HashSet operations
+- Massive wins on large documents where most nodes are matched by hash in top-down phase
 
 **Trade-off analysis:**
-- For xlarge: lost 0.4ms on diff vs baseline, gained 2.5ms on parsing → **net +2.1ms win**
-- Recent optimizations have significantly improved diff performance
-- Could re-add parallelization with different approach if needed
+- For xlarge: now 2.2ms faster than baseline on diff alone
+- Combined with parsing wins: **net +4.7ms faster** on xlarge hot-reload
 
 ### 4. Serialization Benchmarks
 
@@ -107,23 +108,23 @@ Measures complete cycle: parse old, parse new, diff, apply patches:
 
 | Test | Fastest | Median | Mean | vs Baseline | vs Previous Run |
 |------|---------|--------|------|-------------|-----------------|
-| hot_reload_small | 33.2 µs | 34.04 µs | **35.1 µs** | 76% faster (was 149 µs) | same |
-| hot_reload_medium | 6.321 ms | 6.591 ms | **6.607 ms** | 6% slower (was 6.232 ms) | 7% faster |
-| hot_reload_large | 6.895 ms | 7.134 ms | **7.177 ms** | 12% faster (was 8.18 ms) | 10% faster |
-| hot_reload_xlarge | 11.01 ms | 11.48 ms | **11.49 ms** | 27% faster (was 15.76 ms) | 9% faster |
+| hot_reload_small | 32.87 µs | 33.83 µs | **35.24 µs** | 76% faster (was 149 µs) | same |
+| hot_reload_medium | 5.169 ms | 5.646 ms | **5.67 ms** | 9% faster (was 6.232 ms) | 14% faster |
+| hot_reload_large | 5.163 ms | 5.403 ms | **5.45 ms** | 33% faster (was 8.18 ms) | 24% faster |
+| hot_reload_xlarge | 8.295 ms | 8.899 ms | **8.88 ms** | 44% faster (was 15.76 ms) | 23% faster |
 
 **Breakdown for XLarge (340KB):**
 ```
-                    Before    After     Change
+                    Baseline  Current   Change
 Parse old:         5.3 ms    2.8 ms    -47%
 Parse new:         5.3 ms    2.8 ms    -47%
-Diff:              4.8 ms    5.3 ms    +10%
+Diff:              4.8 ms    2.6 ms    -46%  ← lazy descendant optimization
 Apply patches:     0.3 ms    0.3 ms    ±0%
 ────────────────────────────────────────────
-Total:            15.7 ms   11.2 ms    -29%
+Total:            15.7 ms   8.9 ms     -43%
 ```
 
-**Net result:** Parsing wins outweigh diff costs for large documents!
+**Net result:** Parsing wins + lazy descendant optimization = 44% faster hot-reload!
 
 ## Comparison with Baseline
 
@@ -149,10 +150,10 @@ Total:            15.7 ms   11.2 ms    -29%
 
 | Size | Baseline | Current | Speedup |
 |------|----------|---------|---------|
-| Small | 149 µs | 35.1 µs | 4.25x |
-| Medium | 6.232 ms | 6.607 ms | 0.94x |
-| Large | 8.18 ms | 7.177 ms | 1.14x |
-| XLarge | 15.76 ms | 11.49 ms | 1.37x |
+| Small | 149 µs | 35.2 µs | 4.23x |
+| Medium | 6.232 ms | 5.67 ms | 1.10x |
+| Large | 8.18 ms | 5.45 ms | 1.50x |
+| XLarge | 15.76 ms | 8.88 ms | 1.77x |
 
 ## Analysis
 
@@ -172,37 +173,32 @@ Total:            15.7 ms   11.2 ms    -29%
    - 76% faster hot-reload
    - Lower overhead dominates
 
-4. **Recent optimizations (slot-based paths)**
-   - Improved diff performance across the board
-   - XLarge diff: 5.71ms → 5.27ms (8% faster)
-   - Hot-reload improvements: 7-10% on medium/large docs
+4. **Lazy descendant optimization**
+   - Replaced O(n²) eager precomputation with on-demand computation
+   - XLarge diff: 5.27ms → 2.61ms (51% faster)
+   - Hot-reload improvements: 14-24% on medium/large docs
+   - Diff is now 46% faster than baseline on xlarge
 
 ### What Got Slower
 
-1. **Diff computation on large docs vs original baseline**
-   - Removed rayon parallelization
-   - Sequential `precompute_descendants`
-   - 9-42% slower on medium/large vs original baseline
-   - But improved significantly with recent optimizations
-
-2. **Small document serialization**
+1. **Small document serialization**
    - 70% slower than baseline
    - Still very fast (< 10µs)
 
-### Why Is This Still Worth It?
+### Why Is This Worth It?
 
 For the target use case (hot-reload on large documents):
-- **XLarge hot-reload: 15.76ms → 11.49ms (27% faster)**
-- Parsing improvements (47%) > diff slowdown (9%)
+- **XLarge hot-reload: 15.76ms → 8.88ms (44% faster, 1.77x speedup)**
+- Parsing + diff both faster than baseline now
 - Serialization is 2.7x faster on large docs
 - Small docs see massive wins (76% faster, 4.25x speedup)
 
 ## Future Optimizations
 
-### Re-add Parallelization
+### Re-add Parallelization (lower priority now)
 - Could use `scoped_threadpool` or similar
 - Only parallelize on large documents
-- Estimated gain: 1-2ms on xlarge
+- Lower priority since lazy descendant map eliminated most of the bottleneck
 
 ### Direct cinereus Integration
 - Already implemented! (no conversion step)
@@ -220,11 +216,11 @@ For the target use case (hot-reload on large documents):
 - ✅ Faster parsing (47% on large docs)
 - ✅ Much faster serialization (2.7x on large docs)
 - ✅ Massive wins on small docs (76% faster, 4.25x speedup)
-- ✅ 27% faster hot-reload on xlarge docs
-- ✅ Recent slot-based path refactoring improved diff performance 7-10%
-- ⚠️ Diff still 9-42% slower on medium/large docs vs original baseline (rayon removal)
+- ✅ 44% faster hot-reload on xlarge docs (1.77x speedup)
+- ✅ Lazy descendant map: diff now 46% faster than baseline on xlarge
+- ✅ All improvements stack: parsing + diff + serialization all faster
 
-**Recommendation:** Keep this implementation. The trade-offs are very favorable, with significant wins across the board. Could re-add parallelization later for additional gains if needed.
+**Recommendation:** Keep this implementation. All trade-offs now favor the new implementation across the board.
 
 ## Running Benchmarks
 
