@@ -727,7 +727,7 @@ fn apply_update_props(
         );
 
         for change in changes {
-            if change.name != "_text" {
+            if change.name.as_ref() != "_text" {
                 debug!(
                     "apply_update_props: processing attr {} value={:?}",
                     change.name, change.value

@@ -48,4 +48,4 @@ pub use arena_dom::{Document, ElementData, Namespace, NodeData, NodeKind, parse}
 pub use serialize::{SerializeOptions, serialize_document, serialize_element, serialize_fragment};
 
 /// Zero-copy string tendril
-type Stem = Tendril<UTF8, NonAtomic>;
+pub type Stem = Tendril<UTF8, NonAtomic>;

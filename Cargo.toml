@@ -12,7 +12,7 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.90"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/bearcove/hotmeal"
 
@@ -30,8 +30,8 @@ hotmeal = { path = "hotmeal", version = "0.1.0" }
 indextree = "4.7"
 
 # HTML parsing
-html5ever = "0.29"
-tendril = "0.4"
+html5ever = "0.38"
+tendril = "0.5"
 
 # Other
 tracing = { version = "0.1", default-features = false, features = ["std"] }

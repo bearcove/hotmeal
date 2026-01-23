@@ -127,11 +127,7 @@ impl Document {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn apply_patch(
-        &mut self,
-        patch: &Patch,
-        slots: &mut HashMap<u32, NodeId>,
-    ) -> Result<(), String> {
+    fn apply_patch(&mut self, patch: &Patch, slots: &mut HashMap<u32, NodeId>) -> Result<(), Stem> {
         debug!("Applying patch: {:#?}", patch);
         match patch {
             Patch::InsertElement {
@@ -143,11 +139,8 @@ impl Document {
             } => {
                 // Create new element node
                 let elem_data = ElementData {
-                    tag: StrTendril::from(tag.as_str()),
-                    attrs: attrs
-                        .iter()
-                        .map(|(k, v)| (k.clone(), StrTendril::from(v.as_str())))
-                        .collect(),
+                    tag: tag.clone(),
+                    attrs: attrs.iter().cloned().collect(),
                 };
                 let new_node = self.arena.new_node(NodeData {
                     kind: NodeKind::Element(elem_data),
@@ -168,7 +161,7 @@ impl Document {
                 detach_to_slot,
             } => {
                 let new_node = self.arena.new_node(NodeData {
-                    kind: NodeKind::Text(StrTendril::from(text.as_str())),
+                    kind: NodeKind::Text(text.clone()),
                     ns: Namespace::Html,
                 });
                 self.insert_at(at, new_node, *detach_to_slot, slots)?;
@@ -179,7 +172,7 @@ impl Document {
                 detach_to_slot,
             } => {
                 let new_node = self.arena.new_node(NodeData {
-                    kind: NodeKind::Comment(StrTendril::from(text.as_str())),
+                    kind: NodeKind::Comment(text.clone()),
                     ns: Namespace::Html,
                 });
                 self.insert_at(at, new_node, *detach_to_slot, slots)?;
@@ -189,7 +182,7 @@ impl Document {
                     // Replace with empty text node to preserve sibling positions
                     let node_id = self.navigate_path(&path.0)?;
                     let empty_text = self.arena.new_node(NodeData {
-                        kind: NodeKind::Text(StrTendril::new()),
+                        kind: NodeKind::Text(Stem::new()),
                         ns: Namespace::Html,
                     });
                     node_id.insert_before(empty_text, &mut self.arena);
@@ -204,19 +197,18 @@ impl Document {
                 let node_id = self.navigate_path(&path.0)?;
                 let node_data = self.arena[node_id].get_mut();
                 if let NodeKind::Text(t) = &mut node_data.kind {
-                    *t = StrTendril::from(text.as_str());
+                    *t = text.clone();
                 } else {
-                    return Err("SetText: node is not a text node".to_string());
+                    return Err(Stem::from("SetText: node is not a text node"));
                 }
             }
             Patch::SetAttribute { path, name, value } => {
                 let node_id = self.navigate_path(&path.0)?;
                 let node_data = self.arena[node_id].get_mut();
                 if let NodeKind::Element(elem) = &mut node_data.kind {
-                    elem.attrs
-                        .insert(name.clone(), StrTendril::from(value.as_str()));
+                    elem.attrs.insert(name.clone(), value.clone());
                 } else {
-                    return Err("SetAttribute: node is not an element".to_string());
+                    return Err(Stem::from("SetAttribute: node is not an element"));
                 }
             }
             Patch::RemoveAttribute { path, name } => {
@@ -225,7 +217,7 @@ impl Document {
                 if let NodeKind::Element(elem) = &mut node_data.kind {
                     elem.attrs.shift_remove(name);
                 } else {
-                    return Err("RemoveAttribute: node is not an element".to_string());
+                    return Err(Stem::from("RemoveAttribute: node is not an element"));
                 }
             }
             Patch::Move {
@@ -244,7 +236,7 @@ impl Document {
 
                 if needs_replacement {
                     let empty_text = self.arena.new_node(NodeData {
-                        kind: NodeKind::Text(StrTendril::new()),
+                        kind: NodeKind::Text(Stem::new()),
                         ns: Namespace::Html,
                     });
                     node_to_move.insert_before(empty_text, &mut self.arena);
@@ -258,15 +250,15 @@ impl Document {
                 let node_data = self.arena[node_id].get_mut();
 
                 // Handle text node updates
-                if let Some(text_change) = changes.iter().find(|c| c.name == "_text") {
+                if let Some(text_change) = changes.iter().find(|c| c.name.as_ref() == "_text") {
                     if let NodeKind::Text(t) = &mut node_data.kind {
                         if let Some(new_text) = &text_change.value {
-                            *t = StrTendril::from(new_text.as_str());
+                            *t = new_text.clone();
                         }
                     } else if let NodeKind::Comment(c) = &mut node_data.kind
                         && let Some(new_text) = &text_change.value
                     {
-                        *c = StrTendril::from(new_text.as_str());
+                        *c = new_text.clone();
                     }
                 }
 
@@ -282,14 +274,14 @@ impl Document {
                     );
 
                     for change in changes {
-                        if change.name != "_text" {
+                        if change.name.as_ref() != "_text" {
                             debug!(
                                 "UpdateProps: processing attr {} value={:?}",
                                 change.name, change.value
                             );
                             let value = if let Some(new_value) = &change.value {
                                 // Different value - use the new one
-                                StrTendril::from(new_value.as_str())
+                                new_value.clone()
                             } else {
                                 // Same value - copy from old attrs
                                 old_attrs.get(&change.name).cloned().unwrap_or_default()

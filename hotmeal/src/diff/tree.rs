@@ -53,6 +53,7 @@ pub struct HtmlProps {
     /// IndexMap preserves insertion order for consistent serialization
     #[allow(clippy::mutable_key_type)]
     pub attrs: IndexMap<Stem, Stem>,
+
     /// Text content (atomic Tendril is refcounted + Sync - cheap to clone)
     pub text: Option<Stem>,
 }
