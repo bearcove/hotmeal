@@ -40,11 +40,17 @@ impl<'a> Stem<'a> {
     }
 
     pub fn push_str(&mut self, s: &str) {
-        let current = self.as_str();
-        let mut combined = CompactString::with_capacity(current.len() + s.len());
-        combined.push_str(current);
-        combined.push_str(s);
-        *self = Self::Owned(combined);
+        match self {
+            Self::Owned(existing) => {
+                existing.push_str(s);
+            }
+            Self::Borrowed(borrowed) => {
+                let mut combined = CompactString::with_capacity(borrowed.len() + s.len());
+                combined.push_str(borrowed);
+                combined.push_str(s);
+                *self = Self::Owned(combined);
+            }
+        }
     }
 
     pub fn push_tendril(&mut self, t: &StrTendril) {
