@@ -408,7 +408,8 @@ impl<'a> DiffableDocument<'a> {
     /// Pre-computes hashes and caches kind/props for all body descendants.
     pub fn new(doc: &'a Document) -> Self {
         let body_id = doc.body().expect("document must have body");
-        let mut nodes = HashMap::new();
+        // Pre-allocate based on arena size (upper bound for descendants)
+        let mut nodes = HashMap::with_capacity(doc.arena.count());
 
         // First pass: compute kind, props for all nodes
         for node_id in body_id.descendants(&doc.arena) {
@@ -430,7 +431,7 @@ impl<'a> DiffableDocument<'a> {
                     let kind = HtmlNodeKind::Text;
                     let props = HtmlProps {
                         attrs: Vec::new(),
-                        text: Some(text.clone().into_send().into()),
+                        text: Some(text.clone()),
                     };
                     (kind, props)
                 }
@@ -438,7 +439,7 @@ impl<'a> DiffableDocument<'a> {
                     let kind = HtmlNodeKind::Comment;
                     let props = HtmlProps {
                         attrs: Vec::new(),
-                        text: Some(text.clone().into_send().into()),
+                        text: Some(text.clone()),
                     };
                     (kind, props)
                 }
@@ -684,7 +685,7 @@ fn add_arena_children(
                 let kind = HtmlNodeKind::Text;
                 let props = HtmlProps {
                     attrs: Vec::new(),
-                    text: Some(text.clone().into_send().into()),
+                    text: Some(text.clone()),
                 };
                 let data = NodeData {
                     hash: NodeHash(0),
@@ -697,7 +698,7 @@ fn add_arena_children(
                 let kind = HtmlNodeKind::Comment;
                 let props = HtmlProps {
                     attrs: Vec::new(),
-                    text: Some(text.clone().into_send().into()),
+                    text: Some(text.clone()),
                 };
                 let data = NodeData {
                     hash: NodeHash(0),
@@ -1178,6 +1179,7 @@ fn convert_ops_with_shadow<T: DiffTree<Types = HtmlTreeTypes>>(
                 let path = shadow.compute_path(node_a);
 
                 // Convert cinereus PropertyInFinalState to our PropChange
+                // The changes vec represents the complete final attribute state
                 let prop_changes: Vec<PropChange> = changes
                     .into_iter()
                     .map(|c| PropChange {
@@ -1189,9 +1191,7 @@ fn convert_ops_with_shadow<T: DiffTree<Types = HtmlTreeTypes>>(
                     })
                     .collect();
 
-                // Always generate UpdateProps - the changes vec represents the complete final
-                // state. An empty vec (or vec with only _text) means the element has no
-                // attributes in the final state.
+                // cinereus only emits UpdateProperties when there's a real change or full removal
                 result.push(Patch::UpdateProps {
                     path: NodePath(path),
                     changes: prop_changes,
