@@ -729,5 +729,24 @@ pub fn dump_rust_parsed(html: &str) -> Result<String, JsValue> {
         result
     }
 
-    Ok(dump_node(&doc, doc.root, 0))
+    // Find the body element to match the browser DOM dump behavior
+    fn find_body(doc: &hotmeal::Document, node_id: NodeId) -> Option<NodeId> {
+        let node = doc.get(node_id);
+        if let NodeKind::Element(elem) = &node.kind
+            && elem.tag.as_ref().eq_ignore_ascii_case("body")
+        {
+            return Some(node_id);
+        }
+        for child_id in node_id.children(&doc.arena) {
+            if let Some(body_id) = find_body(doc, child_id) {
+                return Some(body_id);
+            }
+        }
+        None
+    }
+
+    let body_id = find_body(&doc, doc.root)
+        .ok_or_else(|| JsValue::from_str("body element not found in parsed HTML"))?;
+
+    Ok(dump_node(&doc, body_id, 0))
 }
