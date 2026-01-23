@@ -27,10 +27,10 @@ use indextree::{Arena, NodeId};
 pub trait TreeTypes {
     /// The kind/type of nodes (e.g., "div", "span" for HTML).
     /// Used during matching: only nodes of the same kind can match.
-    type Kind: Clone + Eq + Hash + Display + Send + Sync;
+    type Kind: Clone + Eq + Hash + Display;
 
     /// The properties type for key-value pairs attached to nodes.
-    type Props: Properties + Send;
+    type Props: Properties;
 }
 
 /// A structural hash of a node and all its descendants (Merkle-tree style).
