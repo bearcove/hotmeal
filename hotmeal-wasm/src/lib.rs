@@ -44,18 +44,31 @@ pub fn diff_html(old_html: &str, new_html: &str) -> Result<String, JsValue> {
     Ok(json)
 }
 
+/// Compute diff between two HTML documents and return patches directly.
+/// Returns owned patches for use with apply_patches.
+pub fn diff_html_patches(old_html: &str, new_html: &str) -> Result<Vec<Patch<'static>>, JsValue> {
+    let old_tendril = StrTendril::from(old_html);
+    let new_tendril = StrTendril::from(new_html);
+    let patches = hotmeal::diff_html(&old_tendril, &new_tendril)
+        .map_err(|e| JsValue::from_str(&format!("diff failed: {e}")))?;
+
+    Ok(patches.into_iter().map(|p| p.into_owned()).collect())
+}
+
 /// Slots for detached nodes during patch application.
 /// In Chawathe's model, INSERT doesn't shift - it displaces the occupant to a slot.
-struct Slots {
+///
+/// Use this with `apply_patches_with_slots` when applying patches incrementally.
+pub struct Slots {
     nodes: Vec<Option<Node>>,
 }
 
 impl Slots {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self { nodes: Vec::new() }
     }
 
-    fn store(&mut self, slot: u32, node: Node) {
+    pub fn store(&mut self, slot: u32, node: Node) {
         let idx = slot as usize;
         if idx >= self.nodes.len() {
             self.nodes.resize(idx + 1, None);
@@ -63,7 +76,7 @@ impl Slots {
         self.nodes[idx] = Some(node);
     }
 
-    fn take(&mut self, slot: u32) -> Option<Node> {
+    pub fn take(&mut self, slot: u32) -> Option<Node> {
         let idx = slot as usize;
         if idx < self.nodes.len() {
             self.nodes[idx].take()
@@ -72,9 +85,15 @@ impl Slots {
         }
     }
 
-    fn get(&self, slot: u32) -> Option<&Node> {
+    pub fn get(&self, slot: u32) -> Option<&Node> {
         let idx = slot as usize;
         self.nodes.get(idx).and_then(|n| n.as_ref())
+    }
+}
+
+impl Default for Slots {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -88,8 +107,15 @@ pub fn apply_patches_json(patches_json: &str) -> Result<usize, JsValue> {
     apply_patches(&patches)
 }
 
-/// Apply patches to the document.
+/// Apply patches to the document (high-level API with internal slots).
 pub fn apply_patches(patches: &[Patch]) -> Result<usize, JsValue> {
+    let mut slots = Slots::new();
+    apply_patches_with_slots(patches, &mut slots)
+}
+
+/// Apply patches to the document with external slot storage.
+/// Use this when applying patches incrementally and need to preserve slot state.
+pub fn apply_patches_with_slots(patches: &[Patch], slots: &mut Slots) -> Result<usize, JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
     let document = window
         .document()
@@ -98,11 +124,9 @@ pub fn apply_patches(patches: &[Patch]) -> Result<usize, JsValue> {
     let count = patches.len();
     log(&format!("[hotmeal-wasm] applying {} patches", count));
 
-    let mut slots = Slots::new();
-
     for (i, patch) in patches.iter().enumerate() {
         log(&format!("[hotmeal-wasm] patch {}: {:?}", i, patch));
-        apply_patch(&document, patch, &mut slots).map_err(|e| {
+        apply_patch(&document, patch, slots).map_err(|e| {
             JsValue::from_str(&format!(
                 "patch {}: {}",
                 i,

@@ -22,8 +22,8 @@ roam = { git = "https://github.com/bearcove/roam", branch = "main" }
 roam-websocket = { git = "https://github.com/bearcove/roam", branch = "main" }
 roam-stream = { git = "https://github.com/bearcove/roam", branch = "main" }
 browser-proto = { path = "browser-proto" }
-facet = { git = "https://github.com/facet-rs/facet", branch = "main" }
-facet-json = { git = "https://github.com/facet-rs/facet", branch = "main" }
+libc = "0.2"
+similar = "2.7"
 
 [dependencies.hotmeal]
 path = ".."
@@ -45,6 +45,13 @@ bench = false
 [[bin]]
 name = "browser"
 path = "fuzz_targets/browser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "browser2"
+path = "fuzz_targets/browser2.rs"
 test = false
 doc = false
 bench = false

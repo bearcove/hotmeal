@@ -20,4 +20,10 @@ web-sys = { version = "0.3", features = [
     "Window",
     "Location",
     "UrlSearchParams",
+    "DomParser",
+    "SupportedType",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "Node",
 ] }
