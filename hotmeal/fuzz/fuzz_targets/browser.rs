@@ -63,13 +63,13 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<FuzzRequest>) {
         }
     });
 
-    // 3. Navigate to the bundle HTML (file:// URL)
+    // 3. Navigate to the bundle HTML with port in fragment
     let bundle_path = std::env::current_dir()
         .unwrap()
         .join("browser-bundle")
         .join("dist")
         .join("index.html");
-    let bundle_url = format!("file://{}", bundle_path.display());
+    let bundle_url = format!("file://{}#{}", bundle_path.display(), port);
     eprintln!("[browser-fuzz] Loading bundle from: {}", bundle_url);
 
     let page = browser.new_page(&bundle_url).await.unwrap();
@@ -78,56 +78,9 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<FuzzRequest>) {
     if headed {
         page.execute(EnableParams::default()).await.ok();
         eprintln!("[browser-fuzz] Network logging enabled");
-        // Give DevTools time to initialize
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
-    eprintln!("[browser-fuzz] Page loaded, waiting for WASM...");
-
-    // Wait for WASM to load
-    let mut attempts = 0;
-    loop {
-        match page.evaluate("window.browserWasmReady === true").await {
-            Ok(val) => {
-                if val.into_value::<bool>().unwrap_or(false) {
-                    eprintln!("[browser-fuzz] WASM ready after {} attempts", attempts);
-                    break;
-                }
-            }
-            Err(e) => {
-                eprintln!("[browser-fuzz] Error checking WASM ready: {:?}", e);
-            }
-        }
-        attempts += 1;
-        if attempts % 20 == 0 {
-            eprintln!(
-                "[browser-fuzz] Still waiting for WASM... ({} attempts)",
-                attempts
-            );
-        }
-        if attempts > 200 {
-            panic!("[browser-fuzz] Timeout waiting for WASM");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-
-    // Give a moment for everything to settle
-    if headed {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-
-    // Start connection
-    eprintln!(
-        "[browser-fuzz] Starting WebSocket connection to port {}",
-        port
-    );
-    if let Err(e) = page
-        .evaluate(format!("window.browserWasmConnect({})", port))
-        .await
-    {
-        eprintln!("[browser-fuzz] Warning: browserWasmConnect error: {:?}", e);
-    }
-    eprintln!("[browser-fuzz] browserWasmConnect called");
+    eprintln!("[browser-fuzz] Page loaded, WASM will connect automatically");
 
     // Channel to broadcast current connection handle
     let (conn_tx, conn_rx) = watch::channel::<Option<ConnectionHandle>>(None);
@@ -170,12 +123,21 @@ async fn accept_connections(
     conn_tx: watch::Sender<Option<ConnectionHandle>>,
 ) {
     loop {
-        eprintln!("[browser-fuzz] Waiting for browser to connect...");
+        eprintln!(
+            "[browser-fuzz] Waiting for browser to connect on {:?}...",
+            listener.local_addr()
+        );
         match listener.accept().await {
-            Ok((stream, _addr)) => {
-                eprintln!("[browser-fuzz] Browser connected, upgrading to WebSocket");
+            Ok((stream, addr)) => {
+                eprintln!(
+                    "[browser-fuzz] TCP accept from {}, upgrading to WebSocket...",
+                    addr
+                );
                 match accept_async(stream).await {
                     Ok(ws_stream) => {
+                        eprintln!(
+                            "[browser-fuzz] WebSocket upgrade complete, starting roam handshake..."
+                        );
                         let transport = WsTransport::new(ws_stream);
                         match ws_accept(transport, HandshakeConfig::default(), NoDispatcher).await {
                             Ok((handle, _incoming, driver)) => {
