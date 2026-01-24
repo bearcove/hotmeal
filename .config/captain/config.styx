@@ -16,7 +16,7 @@ pre-push {
     // nextest false
     doc-tests false
     // docs false
-    // cargo-shear false
+    cargo-shear false
 
     // Feature configuration (uncomment and customize as needed)
     // clippy-features (feature1 feature2)

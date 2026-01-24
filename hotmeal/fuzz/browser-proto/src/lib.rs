@@ -6,6 +6,30 @@ use roam::service;
 // Re-export Patch from hotmeal for use in protocol
 pub use hotmeal::Patch;
 
+/// A DOM node in JSON-like format for comparing html5ever vs browser parsing.
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
+#[facet(recursive_type)]
+#[repr(u8)]
+pub enum DomNode {
+    /// An element node with tag name, attributes, and children.
+    Element {
+        tag: String,
+        attrs: Vec<DomAttr>,
+        children: Vec<DomNode>,
+    },
+    /// A text node.
+    Text(String),
+    /// A comment node.
+    Comment(String),
+}
+
+/// An attribute on a DOM element.
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
+pub struct DomAttr {
+    pub name: String,
+    pub value: String,
+}
+
 /// Wrapper for owned patches that can be sent over roam.
 #[derive(Debug, Clone, Facet)]
 pub struct OwnedPatches(pub Vec<Patch<'static>>);
@@ -22,7 +46,11 @@ pub trait BrowserFuzzer {
     /// 1. Set document.body.innerHTML to `old_html`
     /// 2. Apply the patches
     /// 3. Return the resulting document.body.innerHTML
-    async fn test_patch(&self, old_html: String, patches: OwnedPatches) -> TestPatchResult;
+    async fn test_patch(
+        &self,
+        old_html: String,
+        patches: OwnedPatches,
+    ) -> Result<TestPatchResult, String>;
 
     /// Full roundtrip in browser: parse both HTMLs with DOMParser, diff, apply, compare.
     ///
@@ -32,16 +60,20 @@ pub trait BrowserFuzzer {
     /// 3. Compute diff using hotmeal-wasm
     /// 4. Apply patches to old DOM
     /// 5. Compare result with normalized_new
-    async fn test_roundtrip(&self, old_html: String, new_html: String) -> RoundtripResult;
+    async fn test_roundtrip(
+        &self,
+        old_html: String,
+        new_html: String,
+    ) -> Result<RoundtripResult, String>;
+
+    /// Parse HTML in the browser and return the DOM tree as JSON.
+    /// Used for comparing html5ever parsing with browser parsing.
+    async fn parse_to_dom(&self, html: String) -> DomNode;
 }
 
 /// Result of a full roundtrip test in the browser.
 #[derive(Debug, Clone, Facet)]
 pub struct RoundtripResult {
-    /// Whether the roundtrip succeeded (patched HTML matches expected).
-    pub success: bool,
-    /// Error message if something failed.
-    pub error: Option<String>,
     /// The old HTML after browser normalization.
     pub normalized_old: String,
     /// The new HTML after browser normalization (expected result).
@@ -50,6 +82,8 @@ pub struct RoundtripResult {
     pub result_html: String,
     /// Number of patches applied.
     pub patch_count: u32,
+    /// DOM tree of old HTML before any patches.
+    pub initial_dom_tree: DomNode,
     /// Step-by-step trace of patch application.
     pub patch_trace: Vec<PatchStep>,
 }
@@ -57,14 +91,12 @@ pub struct RoundtripResult {
 /// Result of applying patches in the browser.
 #[derive(Debug, Clone, Facet)]
 pub struct TestPatchResult {
-    /// Whether the patch application succeeded.
-    pub success: bool,
-    /// Error message if the patch failed.
-    pub error: Option<String>,
     /// The resulting HTML after applying patches.
     pub result_html: String,
     /// Normalized old HTML after browser parsing (innerHTML readback).
     pub normalized_old_html: String,
+    /// DOM tree of old HTML before any patches.
+    pub initial_dom_tree: DomNode,
     /// Step-by-step trace of patch application.
     /// Each entry is the innerHTML after applying that patch.
     pub patch_trace: Vec<PatchStep>,
@@ -79,6 +111,8 @@ pub struct PatchStep {
     pub patch_debug: String,
     /// The innerHTML after applying this patch.
     pub html_after: String,
+    /// Full DOM tree after applying this patch.
+    pub dom_tree: DomNode,
 }
 
 #[cfg(test)]

@@ -845,7 +845,22 @@ pub fn parse(tendril: &StrTendril) -> Document<'_> {
 
     let input_ref: &str = tendril.as_ref();
     let sink = ArenaSink::new(input_ref);
-    parse_document(sink, Default::default()).one(tendril.clone())
+
+    // Prepend DOCTYPE if not present to ensure no-quirks mode parsing.
+    // This matches browser behavior for innerHTML which always uses no-quirks.
+    let input_lower = input_ref.to_ascii_lowercase();
+    let has_doctype = input_lower.trim_start().starts_with("<!doctype");
+
+    if has_doctype {
+        parse_document(sink, Default::default()).one(tendril.clone())
+    } else {
+        let mut with_doctype = StrTendril::from("<!DOCTYPE html>");
+        with_doctype.push_tendril(tendril);
+        let mut doc = parse_document(sink, Default::default()).one(with_doctype);
+        // Don't store the artificially added DOCTYPE - preserve original input behavior
+        doc.doctype = None;
+        doc
+    }
 }
 
 /// Owned element name wrapper
@@ -1240,7 +1255,8 @@ mod tests {
     #[test]
     fn test_zero_copy_parsing() {
         // Verify that parsed strings borrow from the original input when possible
-        let html = t("<html><body><p>Hello World</p></body></html>");
+        // Note: DOCTYPE is required for zero-copy since parse() prepends it otherwise
+        let html = t("<!DOCTYPE html><html><body><p>Hello World</p></body></html>");
         let html_start = html.as_ref().as_ptr() as usize;
         let html_end = html_start + html.len();
         println!("Input range: {:#x}..{:#x}", html_start, html_end);

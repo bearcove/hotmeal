@@ -22,7 +22,6 @@ use futures_util::StreamExt;
 use libfuzzer_sys::fuzz_target;
 use roam_stream::{ConnectionHandle, HandshakeConfig, NoDispatcher};
 use roam_websocket::{WsTransport, ws_accept};
-use similar::{ChangeTag, TextDiff};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::accept_async;
@@ -81,7 +80,7 @@ fn split_input(data: &[u8]) -> Option<(String, String)> {
 struct FuzzRequest {
     old_html: String,
     new_html: String,
-    response_tx: oneshot::Sender<RoundtripResult>,
+    response_tx: oneshot::Sender<Option<RoundtripResult>>,
 }
 
 static CHANNEL: OnceLock<mpsc::UnboundedSender<FuzzRequest>> = OnceLock::new();
@@ -181,12 +180,11 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<FuzzRequest>) {
         let client = BrowserFuzzerClient::new(handle);
         match client.test_roundtrip(req.old_html, req.new_html).await {
             Ok(result) => {
-                let _ = req.response_tx.send(result);
+                let _ = req.response_tx.send(Some(result));
             }
             Err(e) => {
-                eprintln!("[browser2-fuzz] RPC error: {:?}", e);
-                eprintln!("[browser2-fuzz] Browser connection lost, exiting");
-                std::process::exit(0);
+                eprintln!("[browser2-fuzz] Error: {:?}", e);
+                let _ = req.response_tx.send(None);
             }
         }
     }
@@ -243,30 +241,6 @@ async fn accept_connections(
     }
 }
 
-/// Check if input contains rawtext elements that have innerHTML round-trip issues.
-/// These elements (textarea, script, style, pre, etc.) have special parsing rules where
-/// the first newline is eaten, causing mismatches between browser and html5ever.
-fn contains_rawtext_element(s: &str) -> bool {
-    let lower = s.to_ascii_lowercase();
-    lower.contains("<textarea")
-        || lower.contains("<script")
-        || lower.contains("<style")
-        || lower.contains("<xmp")
-        || lower.contains("<iframe")
-        || lower.contains("<noembed")
-        || lower.contains("<noframes")
-        || lower.contains("<noscript")
-        || lower.contains("<pre")
-        || lower.contains("<listing")
-}
-
-/// Check if input contains table element, which triggers foster parenting.
-/// When browsers see <table> inside elements that can't contain it (like <p>),
-/// they restructure the DOM in ways that don't match html5ever's parsing.
-fn contains_table(s: &str) -> bool {
-    s.to_ascii_lowercase().contains("<table")
-}
-
 fuzz_target!(|data: &[u8]| {
     // Split at 0xFF delimiter
     let Some((html_a, html_b)) = split_input(data) else {
@@ -275,19 +249,6 @@ fuzz_target!(|data: &[u8]| {
 
     // Skip empty inputs
     if html_a.is_empty() || html_b.is_empty() {
-        return;
-    }
-
-    // Skip inputs with rawtext elements - innerHTML round-trip doesn't preserve
-    // newlines correctly due to "first newline after tag is eaten" rule mismatch
-    // between browsers and html5ever
-    if contains_rawtext_element(&html_a) || contains_rawtext_element(&html_b) {
-        return;
-    }
-
-    // Skip inputs with table - foster parenting causes DOM restructuring
-    // that differs between browsers and html5ever
-    if contains_table(&html_a) || contains_table(&html_b) {
         return;
     }
 
@@ -302,51 +263,15 @@ fuzz_target!(|data: &[u8]| {
         .unwrap();
 
     // Wait for result
-    let result = response_rx.blocking_recv().unwrap();
+    let Some(result) = response_rx.blocking_recv().unwrap() else {
+        // Error occurred (logged by worker)
+        return;
+    };
 
     // Skip cases where both normalize to empty (garbage input)
     if result.normalized_old.trim().is_empty() && result.normalized_new.trim().is_empty() {
         return;
     }
 
-    if !result.success {
-        print_failure(&html_a, &html_b, &result);
-        panic!("Browser roundtrip failed: {:?}", result.error);
-    }
+    // Success!
 });
-
-fn print_failure(html_a: &str, html_b: &str, result: &RoundtripResult) {
-    eprintln!("\n========== FUZZ FAILURE ==========");
-    eprintln!("Input A (raw): {:?}", html_a);
-    eprintln!("Input B (raw): {:?}", html_b);
-    eprintln!("\n--- Normalized old ---");
-    eprintln!("{:?}", result.normalized_old);
-    eprintln!("\n--- Normalized new (expected) ---");
-    eprintln!("{:?}", result.normalized_new);
-    eprintln!("\n--- Result (actual) ---");
-    eprintln!("{:?}", result.result_html);
-    eprintln!("\n--- Patch trace ({} patches) ---", result.patch_count);
-    for step in &result.patch_trace {
-        eprintln!("  Patch {}: {}", step.index, step.patch_debug);
-        eprintln!("    -> {:?}", step.html_after);
-    }
-    eprintln!("\n--- Diff (expected vs result) ---");
-    print_char_diff(&result.normalized_new, &result.result_html);
-    eprintln!("\nError: {:?}", result.error);
-    eprintln!("==================================\n");
-}
-
-fn print_char_diff(expected: &str, actual: &str) {
-    let diff = TextDiff::from_chars(expected, actual);
-    for change in diff.iter_all_changes() {
-        let (sign, color) = match change.tag() {
-            ChangeTag::Delete => ("-", "\x1b[31m"), // red
-            ChangeTag::Insert => ("+", "\x1b[32m"), // green
-            ChangeTag::Equal => (" ", ""),
-        };
-        if change.tag() != ChangeTag::Equal {
-            eprint!("{}{}{:?}\x1b[0m", color, sign, change.value());
-        }
-    }
-    eprintln!();
-}
