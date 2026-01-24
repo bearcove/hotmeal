@@ -286,30 +286,31 @@ fn run_roundtrip(old_html: &str, new_html: &str) -> Result<RoundtripResult, Stri
 }
 
 fn run_test(old_html: &str, patches: Vec<Patch<'static>>) -> Result<TestPatchResult, String> {
+    use web_sys::{DomParser, SupportedType};
+
     log(&format!(
         "[browser-wasm] run_test starting, old_html={:?}",
         old_html
     ));
 
-    hotmeal_wasm::set_body_inner_html(old_html)
-        .map_err(|e| format!("set_body_inner_html failed: {:?}", e))?;
-
-    let normalized_old_html = hotmeal_wasm::get_body_inner_html()
-        .map_err(|e| format!("get_body_inner_html failed: {:?}", e))?;
+    // Parse the full HTML document using DOMParser (same as html5ever)
+    // This gives us the initial_dom_tree for comparison
+    let parser = DomParser::new().map_err(|e| format!("DOMParser::new failed: {:?}", e))?;
+    let parsed_doc = parser
+        .parse_from_string(old_html, SupportedType::TextHtml)
+        .map_err(|e| format!("parse_from_string failed: {:?}", e))?;
+    let parsed_body = parsed_doc.body().ok_or("parsed doc has no body")?;
+    let initial_dom_tree = node_to_dom_node(&parsed_body.clone().into());
+    let normalized_old_html = parsed_body.inner_html();
 
     log(&format!(
         "[browser-wasm] normalized_old_html={:?}",
         normalized_old_html
     ));
 
-    // Capture initial DOM tree
-    let body = web_sys::window()
-        .ok_or("no window")?
-        .document()
-        .ok_or("no document")?
-        .body()
-        .ok_or("no body")?;
-    let initial_dom_tree = node_to_dom_node(&body.clone().into());
+    // Set the actual document body to the normalized content for patching
+    hotmeal_wasm::set_body_inner_html(&normalized_old_html)
+        .map_err(|e| format!("set_body_inner_html failed: {:?}", e))?;
 
     log(&format!(
         "[browser-wasm] applying {} patches",

@@ -323,6 +323,12 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
+    // Skip inputs with null bytes - browsers replace them with U+FFFD but html5ever
+    // handles them differently, causing false parser mismatches
+    if html_a.contains('\0') || html_b.contains('\0') {
+        return;
+    }
+
     // Wrap in full HTML document with DOCTYPE for no-quirks mode
     let full_a = format!("<!DOCTYPE html><html><body>{}</body></html>", html_a);
     let full_b = format!("<!DOCTYPE html><html><body>{}</body></html>", html_b);
@@ -343,11 +349,11 @@ fuzz_target!(|data: &[u8]| {
     // Convert to owned for sending over roam
     let owned_patches = OwnedPatches(patches.iter().cloned().map(|p| p.into_owned()).collect());
 
-    // Send to browser worker
+    // Send to browser worker (send full wrapped HTML, not just fragment)
     let (response_tx, response_rx) = oneshot::channel();
     get_channel()
         .send(FuzzRequest {
-            old_html: html_a.clone(),
+            old_html: full_a.clone(),
             patches: owned_patches,
             response_tx,
         })

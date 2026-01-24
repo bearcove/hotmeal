@@ -1489,4 +1489,47 @@ mod tests {
             output
         );
     }
+
+    #[test]
+    fn test_incomplete_tag_at_eof() {
+        // Test how html5ever handles "incomplete" tags like `<b</body>`
+        //
+        // Per the HTML spec, in TagName state, characters like '<' fall through to
+        // "anything else" and are appended to the tag name. So `<b</body>` parses as:
+        // - '<' -> TagOpen
+        // - 'b' -> create tag 'b', TagName state
+        // - '<' -> append '<' to tag name -> "b<"
+        // - '/' -> SelfClosingStartTag state
+        // - 'b' -> not '>', reconsume in BeforeAttributeName
+        // - 'o','d','y' -> attribute name "body"
+        // - '>' -> emit tag
+        //
+        // Both html5ever and Chrome produce: <b< body="">
+        // This is correct spec-compliant behavior.
+        let html = t("<!DOCTYPE html><html><body>hr<b</body></html>");
+        let doc = parse(&html);
+
+        let body = doc.body().expect("should have body");
+        let children: Vec<_> = body.children(&doc.arena).collect();
+
+        // We get 2 children: Text("hr") and Element("b<" with attr body="")
+        assert_eq!(children.len(), 2);
+
+        // First child is text "hr"
+        match &doc.get(children[0]).kind {
+            NodeKind::Text(t) => assert_eq!(t.as_ref(), "hr"),
+            other => panic!("Expected Text node, got {:?}", other),
+        }
+
+        // Second child is element "b<" with attribute "body"
+        match &doc.get(children[1]).kind {
+            NodeKind::Element(elem) => {
+                assert_eq!(elem.tag.as_ref(), "b<");
+                assert_eq!(elem.attrs.len(), 1);
+                assert_eq!(elem.attrs[0].0.local.as_ref(), "body");
+                assert_eq!(elem.attrs[0].1.as_ref(), "");
+            }
+            other => panic!("Expected Element node, got {:?}", other),
+        }
+    }
 }
