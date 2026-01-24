@@ -136,24 +136,25 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<FuzzRequest>) {
 
     let page = browser.new_page(&bundle_url).await.unwrap();
 
-    // Enable runtime to capture console logs
-    page.execute(RuntimeEnableParams::default()).await.ok();
+    // Enable runtime to capture console logs (if BROWSER_CONSOLE is set)
+    if std::env::var("BROWSER_CONSOLE").is_ok() {
+        page.execute(RuntimeEnableParams::default()).await.ok();
 
-    // Subscribe to console events
-    let mut console_events = page
-        .event_listener::<EventConsoleApiCalled>()
-        .await
-        .unwrap();
-    tokio::spawn(async move {
-        while let Some(event) = console_events.next().await {
-            let args: Vec<String> = event
-                .args
-                .iter()
-                .filter_map(|arg| arg.value.as_ref().map(|v| v.to_string()))
-                .collect();
-            eprintln!("[console] {}", args.join(" "));
-        }
-    });
+        let mut console_events = page
+            .event_listener::<EventConsoleApiCalled>()
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            while let Some(event) = console_events.next().await {
+                let args: Vec<String> = event
+                    .args
+                    .iter()
+                    .filter_map(|arg| arg.value.as_ref().map(|v| v.to_string()))
+                    .collect();
+                eprintln!("[console] {}", args.join(" "));
+            }
+        });
+    }
 
     if headed {
         page.execute(EnableParams::default()).await.ok();
