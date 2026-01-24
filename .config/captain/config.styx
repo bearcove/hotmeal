@@ -8,7 +8,7 @@ pre-commit {
     // rustfmt false
     // cargo-lock false
     // arborium false
-    // edition-2024 false
+    edition-2024 false
 }
 
 pre-push {

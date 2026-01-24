@@ -454,7 +454,7 @@ dependencies = [
  "impls",
  "indexmap",
  "smallvec",
- "tendril",
+ "tendril 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -849,7 +849,7 @@ dependencies = [
  "html5ever",
  "rapidhash",
  "smallvec",
- "tendril",
+ "tendril 0.5.0",
 ]
 
 [[package]]
@@ -867,7 +867,7 @@ dependencies = [
  "roam-stream",
  "roam-websocket",
  "similar",
- "tendril",
+ "tendril 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio",
  "tokio-tungstenite",
 ]
@@ -889,8 +889,6 @@ dependencies = [
 [[package]]
 name = "html5ever"
 version = "0.38.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1054432bae2f14e0061e33d23402fbaa67a921d319d56adc6bcf887ddad1cbc2"
 dependencies = [
  "log",
  "markup5ever",
@@ -1255,11 +1253,9 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 [[package]]
 name = "markup5ever"
 version = "0.38.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8983d30f2915feeaaab2d6babdd6bc7e9ed1a00b66b5e6d74df19aa9c0e91862"
 dependencies = [
  "log",
- "tendril",
+ "tendril 0.5.0",
  "web_atoms",
 ]
 
@@ -1995,6 +1991,14 @@ dependencies = [
 [[package]]
 name = "tendril"
 version = "0.5.0"
+dependencies = [
+ "new_debug_unreachable",
+ "utf-8",
+]
+
+[[package]]
+name = "tendril"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4790fc369d5a530f4b544b094e31388b9b3a37c0f4652ade4505945f5660d24"
 dependencies = [
@@ -2398,8 +2402,6 @@ dependencies = [
 [[package]]
 name = "web_atoms"
 version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57a9779e9f04d2ac1ce317aee707aa2f6b773afba7b931222bff6983843b1576"
 dependencies = [
  "phf",
  "phf_codegen",

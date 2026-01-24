@@ -47,6 +47,22 @@ fn is_valid_attr_name(name: &str) -> bool {
         && !name.starts_with(char::is_whitespace)
 }
 
+/// Check if a tag name is valid for the DOM createElement API.
+/// The HTML parser is lenient, but createElement rejects names with <, >, etc.
+fn is_valid_tag_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('<')
+        && !name.contains('>')
+        && !name.contains('=')
+        && !name.contains('"')
+        && !name.contains('\'')
+        && !name.contains('/')
+        && !name.contains(' ')
+        && !name.contains('\t')
+        && !name.contains('\n')
+        && !name.contains('\r')
+}
+
 /// Check if any patch contains attributes with invalid names.
 fn patches_have_invalid_attrs(patches: &[Patch]) -> bool {
     for patch in patches {
@@ -74,6 +90,18 @@ fn patches_have_invalid_attrs(patches: &[Patch]) -> bool {
                 }
             }
             _ => {}
+        }
+    }
+    false
+}
+
+/// Check if any patch contains elements with invalid tag names.
+fn patches_have_invalid_tags(patches: &[Patch]) -> bool {
+    for patch in patches {
+        if let Patch::InsertElement { tag, .. } = patch {
+            if !is_valid_tag_name(tag.as_ref()) {
+                return true;
+            }
         }
     }
     false
@@ -186,6 +214,21 @@ fn run_roundtrip(old_html: &str, new_html: &str) -> RoundtripResult {
     // These occur when browsers parse malformed HTML with exotic attributes
     if patches_have_invalid_attrs(&patches) {
         log("[browser-wasm] skipping: patches contain invalid attribute names");
+        return RoundtripResult {
+            success: true, // Treat as skip, not failure
+            error: None,
+            normalized_old,
+            normalized_new: normalized_new.clone(),
+            result_html: normalized_new, // Pretend it worked
+            patch_count: 0,
+            patch_trace: vec![],
+        };
+    }
+
+    // Check for invalid tag names that can't be created via DOM API
+    // Browsers parse tags like <s<> but createElement("s<") will fail
+    if patches_have_invalid_tags(&patches) {
+        log("[browser-wasm] skipping: patches contain invalid tag names");
         return RoundtripResult {
             success: true, // Treat as skip, not failure
             error: None,

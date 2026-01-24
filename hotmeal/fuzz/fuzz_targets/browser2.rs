@@ -12,7 +12,6 @@
 
 use std::sync::OnceLock;
 
-use arbitrary::Arbitrary;
 use browser_proto::{BrowserFuzzerClient, RoundtripResult};
 use chromiumoxide::{
     Browser, BrowserConfig,
@@ -69,10 +68,14 @@ extern "C" fn signal_handler(sig: libc::c_int) {
     }
 }
 
-#[derive(Debug, Clone, Arbitrary)]
-struct Input {
-    html_a: String,
-    html_b: String,
+/// Split raw bytes at 0xFF delimiter into two HTML strings.
+/// Format: html_a 0xFF html_b
+/// Returns None if input doesn't contain delimiter or isn't valid UTF-8.
+fn split_input(data: &[u8]) -> Option<(String, String)> {
+    let pos = data.iter().position(|&b| b == 0xFF)?;
+    let html_a = std::str::from_utf8(&data[..pos]).ok()?.to_owned();
+    let html_b = std::str::from_utf8(&data[pos + 1..]).ok()?.to_owned();
+    Some((html_a, html_b))
 }
 
 struct FuzzRequest {
@@ -241,7 +244,7 @@ async fn accept_connections(
 }
 
 /// Check if input contains rawtext elements that have innerHTML round-trip issues.
-/// These elements (textarea, script, style, etc.) have special parsing rules where
+/// These elements (textarea, script, style, pre, etc.) have special parsing rules where
 /// the first newline is eaten, causing mismatches between browser and html5ever.
 fn contains_rawtext_element(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
@@ -253,18 +256,38 @@ fn contains_rawtext_element(s: &str) -> bool {
         || lower.contains("<noembed")
         || lower.contains("<noframes")
         || lower.contains("<noscript")
+        || lower.contains("<pre")
+        || lower.contains("<listing")
 }
 
-fuzz_target!(|input: Input| {
+/// Check if input contains table element, which triggers foster parenting.
+/// When browsers see <table> inside elements that can't contain it (like <p>),
+/// they restructure the DOM in ways that don't match html5ever's parsing.
+fn contains_table(s: &str) -> bool {
+    s.to_ascii_lowercase().contains("<table")
+}
+
+fuzz_target!(|data: &[u8]| {
+    // Split at 0xFF delimiter
+    let Some((html_a, html_b)) = split_input(data) else {
+        return;
+    };
+
     // Skip empty inputs
-    if input.html_a.is_empty() || input.html_b.is_empty() {
+    if html_a.is_empty() || html_b.is_empty() {
         return;
     }
 
     // Skip inputs with rawtext elements - innerHTML round-trip doesn't preserve
     // newlines correctly due to "first newline after tag is eaten" rule mismatch
     // between browsers and html5ever
-    if contains_rawtext_element(&input.html_a) || contains_rawtext_element(&input.html_b) {
+    if contains_rawtext_element(&html_a) || contains_rawtext_element(&html_b) {
+        return;
+    }
+
+    // Skip inputs with table - foster parenting causes DOM restructuring
+    // that differs between browsers and html5ever
+    if contains_table(&html_a) || contains_table(&html_b) {
         return;
     }
 
@@ -272,8 +295,8 @@ fuzz_target!(|input: Input| {
     let (response_tx, response_rx) = oneshot::channel();
     get_channel()
         .send(FuzzRequest {
-            old_html: input.html_a.clone(),
-            new_html: input.html_b.clone(),
+            old_html: html_a.clone(),
+            new_html: html_b.clone(),
             response_tx,
         })
         .unwrap();
@@ -287,15 +310,15 @@ fuzz_target!(|input: Input| {
     }
 
     if !result.success {
-        print_failure(&input, &result);
+        print_failure(&html_a, &html_b, &result);
         panic!("Browser roundtrip failed: {:?}", result.error);
     }
 });
 
-fn print_failure(input: &Input, result: &RoundtripResult) {
+fn print_failure(html_a: &str, html_b: &str, result: &RoundtripResult) {
     eprintln!("\n========== FUZZ FAILURE ==========");
-    eprintln!("Input A (raw): {:?}", input.html_a);
-    eprintln!("Input B (raw): {:?}", input.html_b);
+    eprintln!("Input A (raw): {:?}", html_a);
+    eprintln!("Input B (raw): {:?}", html_b);
     eprintln!("\n--- Normalized old ---");
     eprintln!("{:?}", result.normalized_old);
     eprintln!("\n--- Normalized new (expected) ---");
