@@ -83,6 +83,81 @@ fn test_img_alt_attribute_preservation() {
     );
 }
 
+/// Regression test for textarea content corruption
+/// html_a: "\n$"
+/// html_b: "<textarea>\n\n\n\n" (unclosed - browser captures </body></html> as content)
+#[test]
+fn test_textarea_content() {
+    // Simulate what the browser does: unclosed textarea captures the closing tags
+    let a = t("<html><body>\n$</body></html>");
+    // Browser normalizes unclosed <textarea>\n\n\n\n</body></html> to this:
+    // (the </body></html> become escaped text inside textarea)
+    let b = t("<html><body><textarea>\n\n\n\n&lt;/body&gt;&lt;/html&gt;</textarea></body></html>");
+
+    println!("Parsing a: {:?}", a);
+    let doc_a = hotmeal::parse(&a);
+    println!("doc_a HTML: {:?}", doc_a.to_html());
+
+    println!("Parsing b: {:?}", b);
+    let doc_b = hotmeal::parse(&b);
+    println!("doc_b HTML: {:?}", doc_b.to_html());
+
+    println!("Computing diff...");
+    let patches = hotmeal::diff(&doc_a, &doc_b).expect("diff should succeed");
+    println!("Patches: {:#?}", patches);
+
+    // Apply patches
+    let mut patched = doc_a.clone();
+    patched
+        .apply_patches(patches)
+        .expect("apply should succeed");
+
+    println!("Patched: {:?}", patched.to_html());
+    println!("Expected: {:?}", doc_b.to_html());
+
+    assert_eq!(
+        patched.to_html(),
+        doc_b.to_html(),
+        "Patched HTML should match target"
+    );
+}
+
+/// Regression test for fuzzer crash with <s = input
+/// html_a: "'" (single quote)
+/// html_b: "<s ="
+#[test]
+fn test_text_to_s_element() {
+    let a = t("<html><body>'</body></html>");
+    let b = t("<html><body><s =</body></html>");
+
+    println!("Parsing a: {:?}", a);
+    let doc_a = hotmeal::parse(&a);
+    println!("doc_a HTML: {:?}", doc_a.to_html());
+
+    println!("Parsing b: {:?}", b);
+    let doc_b = hotmeal::parse(&b);
+    println!("doc_b HTML: {:?}", doc_b.to_html());
+
+    println!("Computing diff...");
+    let patches = hotmeal::diff(&doc_a, &doc_b).expect("diff should succeed");
+    println!("Patches: {:#?}", patches);
+
+    // Apply patches
+    let mut patched = doc_a.clone();
+    patched
+        .apply_patches(patches)
+        .expect("apply should succeed");
+
+    println!("Patched: {:?}", patched.to_html());
+    println!("Expected: {:?}", doc_b.to_html());
+
+    assert_eq!(
+        patched.to_html(),
+        doc_b.to_html(),
+        "Patched HTML should match target"
+    );
+}
+
 /// Regression test for fuzzer crash with minimal input
 /// crash-9d5bce5f90d295276df5f9cfa00700d855d43ad8, minimized to 4 bytes
 /// html_a: "<!" (bytes [60, 33])

@@ -75,6 +75,8 @@ pub struct TestPatchResult {
 pub struct PatchStep {
     /// Index of the patch that was applied.
     pub index: u32,
+    /// Debug representation of the patch being applied.
+    pub patch_debug: String,
     /// The innerHTML after applying this patch.
     pub html_after: String,
 }

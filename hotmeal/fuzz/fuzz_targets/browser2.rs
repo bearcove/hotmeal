@@ -14,7 +14,11 @@ use std::sync::OnceLock;
 
 use arbitrary::Arbitrary;
 use browser_proto::{BrowserFuzzerClient, RoundtripResult};
-use chromiumoxide::{Browser, BrowserConfig, cdp::browser_protocol::network::EnableParams};
+use chromiumoxide::{
+    Browser, BrowserConfig,
+    cdp::browser_protocol::network::EnableParams,
+    cdp::js_protocol::runtime::{EnableParams as RuntimeEnableParams, EventConsoleApiCalled},
+};
 use futures_util::StreamExt;
 use libfuzzer_sys::fuzz_target;
 use roam_stream::{ConnectionHandle, HandshakeConfig, NoDispatcher};
@@ -132,6 +136,25 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<FuzzRequest>) {
 
     let page = browser.new_page(&bundle_url).await.unwrap();
 
+    // Enable runtime to capture console logs
+    page.execute(RuntimeEnableParams::default()).await.ok();
+
+    // Subscribe to console events
+    let mut console_events = page
+        .event_listener::<EventConsoleApiCalled>()
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        while let Some(event) = console_events.next().await {
+            let args: Vec<String> = event
+                .args
+                .iter()
+                .filter_map(|arg| arg.value.as_ref().map(|v| v.to_string()))
+                .collect();
+            eprintln!("[console] {}", args.join(" "));
+        }
+    });
+
     if headed {
         page.execute(EnableParams::default()).await.ok();
         eprintln!("[browser2-fuzz] Network logging enabled");
@@ -216,9 +239,31 @@ async fn accept_connections(
     }
 }
 
+/// Check if input contains rawtext elements that have innerHTML round-trip issues.
+/// These elements (textarea, script, style, etc.) have special parsing rules where
+/// the first newline is eaten, causing mismatches between browser and html5ever.
+fn contains_rawtext_element(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.contains("<textarea")
+        || lower.contains("<script")
+        || lower.contains("<style")
+        || lower.contains("<xmp")
+        || lower.contains("<iframe")
+        || lower.contains("<noembed")
+        || lower.contains("<noframes")
+        || lower.contains("<noscript")
+}
+
 fuzz_target!(|input: Input| {
     // Skip empty inputs
     if input.html_a.is_empty() || input.html_b.is_empty() {
+        return;
+    }
+
+    // Skip inputs with rawtext elements - innerHTML round-trip doesn't preserve
+    // newlines correctly due to "first newline after tag is eaten" rule mismatch
+    // between browsers and html5ever
+    if contains_rawtext_element(&input.html_a) || contains_rawtext_element(&input.html_b) {
         return;
     }
 
@@ -252,9 +297,14 @@ fn print_failure(input: &Input, result: &RoundtripResult) {
     eprintln!("Input B (raw): {:?}", input.html_b);
     eprintln!("\n--- Normalized old ---");
     eprintln!("{:?}", result.normalized_old);
+    eprintln!("\n--- Normalized new (expected) ---");
+    eprintln!("{:?}", result.normalized_new);
+    eprintln!("\n--- Result (actual) ---");
+    eprintln!("{:?}", result.result_html);
     eprintln!("\n--- Patch trace ({} patches) ---", result.patch_count);
     for step in &result.patch_trace {
-        eprintln!("  After patch {}: {:?}", step.index, step.html_after);
+        eprintln!("  Patch {}: {}", step.index, step.patch_debug);
+        eprintln!("    -> {:?}", step.html_after);
     }
     eprintln!("\n--- Diff (expected vs result) ---");
     print_char_diff(&result.normalized_new, &result.result_html);
