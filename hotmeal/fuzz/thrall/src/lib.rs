@@ -344,47 +344,59 @@ fn find_chrome_executable(dir: &std::path::Path) -> Option<PathBuf> {
 
 /// Find the browser bundle directory.
 fn find_browser_bundle() -> Option<std::path::PathBuf> {
-    // Try relative to current dir (for fuzz targets)
-    let cwd = std::env::current_dir().ok()?;
+    let index_html = "index.html";
 
-    // Check: ./browser-bundle/dist/index.html
-    let path1 = cwd.join("browser-bundle").join("dist").join("index.html");
-    if path1.exists() {
-        return Some(path1);
-    }
-
-    // Check: ../fuzz/browser-bundle/dist/index.html (for tests in hotmeal crate)
-    let path2 = cwd
-        .join("fuzz")
-        .join("browser-bundle")
-        .join("dist")
-        .join("index.html");
-    if path2.exists() {
-        return Some(path2);
-    }
-
-    // Check via CARGO_MANIFEST_DIR if available
+    // Try CARGO_MANIFEST_DIR first (most reliable in cargo test)
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let manifest_path = std::path::PathBuf::from(manifest_dir);
+        let manifest_path = std::path::PathBuf::from(&manifest_dir);
+        eprintln!("[thrall] CARGO_MANIFEST_DIR: {}", manifest_dir);
 
-        // From hotmeal/fuzz/thrall -> hotmeal/fuzz/browser-bundle
-        let path3 = manifest_path
-            .parent()?
+        // From hotmeal/fuzz (when running cargo test from fuzz dir)
+        let path1 = manifest_path
             .join("browser-bundle")
             .join("dist")
-            .join("index.html");
-        if path3.exists() {
-            return Some(path3);
+            .join(index_html);
+        if path1.exists() {
+            return Some(path1);
+        }
+
+        // From hotmeal/fuzz/thrall -> hotmeal/fuzz/browser-bundle
+        if let Some(parent) = manifest_path.parent() {
+            let path2 = parent.join("browser-bundle").join("dist").join(index_html);
+            if path2.exists() {
+                return Some(path2);
+            }
         }
 
         // From hotmeal -> hotmeal/fuzz/browser-bundle
-        let path4 = manifest_path
+        let path3 = manifest_path
             .join("fuzz")
             .join("browser-bundle")
             .join("dist")
-            .join("index.html");
+            .join(index_html);
+        if path3.exists() {
+            return Some(path3);
+        }
+    }
+
+    // Fallback: try relative to current working directory
+    if let Ok(cwd) = std::env::current_dir() {
+        eprintln!("[thrall] CWD: {}", cwd.display());
+
+        // Check: ./browser-bundle/dist/index.html
+        let path4 = cwd.join("browser-bundle").join("dist").join(index_html);
         if path4.exists() {
             return Some(path4);
+        }
+
+        // Check: ./fuzz/browser-bundle/dist/index.html
+        let path5 = cwd
+            .join("fuzz")
+            .join("browser-bundle")
+            .join("dist")
+            .join(index_html);
+        if path5.exists() {
+            return Some(path5);
         }
     }
 
