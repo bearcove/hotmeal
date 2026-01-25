@@ -17,6 +17,7 @@ static INIT: Once = Once::new();
 fuzz_target!(|data: &[u8]| {
     INIT.call_once(|| {
         facet_testhelpers::setup();
+        common::init_thrall_quiet();
     });
 
     let Ok(html) = std::str::from_utf8(data) else {

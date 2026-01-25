@@ -18,6 +18,7 @@ fuzz_target!(|data: &[u8]| target(data));
 fn target(data: &[u8]) {
     INIT.call_once(|| {
         facet_testhelpers::setup();
+        common::init_thrall_quiet();
     });
 
     let Some((full_a, full_b)) = common::prepare_html_inputs(data) else {

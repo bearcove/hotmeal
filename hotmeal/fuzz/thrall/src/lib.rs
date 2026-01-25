@@ -27,6 +27,76 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::accept_async;
 
 static CHANNEL: OnceLock<mpsc::UnboundedSender<BrowserRequest>> = OnceLock::new();
+static CONFIG: OnceLock<ThrallConfig> = OnceLock::new();
+
+/// Configuration for the thrall browser worker.
+#[derive(Clone, Copy, Debug)]
+pub struct ThrallConfig {
+    /// Log network requests/responses
+    pub log_network: bool,
+    /// Log CDP events
+    pub log_cdp: bool,
+    /// Log JS exceptions (always recommended)
+    pub log_js_exceptions: bool,
+    /// Log console messages (errors/warnings)
+    pub log_console: bool,
+    /// Log thrall lifecycle messages (startup, connections, etc.)
+    pub log_lifecycle: bool,
+}
+
+impl Default for ThrallConfig {
+    fn default() -> Self {
+        Self {
+            log_network: false,
+            log_cdp: false,
+            log_js_exceptions: true,
+            log_console: true,
+            log_lifecycle: true,
+        }
+    }
+}
+
+impl ThrallConfig {
+    /// Verbose config suitable for debugging tests.
+    pub fn verbose() -> Self {
+        Self {
+            log_network: true,
+            log_cdp: true,
+            log_js_exceptions: true,
+            log_console: true,
+            log_lifecycle: true,
+        }
+    }
+
+    /// Quiet config suitable for fuzzing - only logs JS exceptions.
+    pub fn quiet() -> Self {
+        Self {
+            log_network: false,
+            log_cdp: false,
+            log_js_exceptions: true,
+            log_console: false,
+            log_lifecycle: false,
+        }
+    }
+}
+
+/// Set the thrall configuration. Must be called before any browser operations.
+/// If not called, uses default config (lifecycle + console + exceptions).
+pub fn configure(config: ThrallConfig) {
+    CONFIG.set(config).ok();
+}
+
+fn config() -> &'static ThrallConfig {
+    CONFIG.get_or_init(ThrallConfig::default)
+}
+
+macro_rules! log_lifecycle {
+    ($($arg:tt)*) => {
+        if config().log_lifecycle {
+            eprintln!($($arg)*);
+        }
+    };
+}
 
 /// Internal request enum covering all Browser service methods.
 enum BrowserRequest {
@@ -102,9 +172,11 @@ pub fn parse_to_dom(html: String) -> Option<DomNode> {
 }
 
 async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
+    let cfg = config();
+
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    eprintln!("[thrall] WebSocket server listening on port {}", port);
+    log_lifecycle!("[thrall] WebSocket server listening on port {}", port);
 
     // Get Chrome executable - either from system or download it
     let chrome_path = get_or_fetch_chrome().await;
@@ -113,35 +185,41 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
     let no_sandbox =
         std::env::var("THRALL_NO_SANDBOX").ok().as_deref() == Some("1") || is_running_in_ci();
 
-    let mut config = BrowserConfig::builder()
+    let mut browser_config = BrowserConfig::builder()
         .arg("--allow-file-access-from-files")
         .arg("--disable-web-security");
     if no_sandbox {
         // Required when running as root in CI containers
-        config = config.arg("--no-sandbox");
-        eprintln!("[thrall] Running with --no-sandbox (CI mode)");
+        browser_config = browser_config.arg("--no-sandbox");
+        log_lifecycle!("[thrall] Running with --no-sandbox (CI mode)");
     }
     if let Some(path) = chrome_path {
-        config = config.chrome_executable(path);
+        browser_config = browser_config.chrome_executable(path);
     }
-    config = config.with_head().arg("--auto-open-devtools-for-tabs");
+    browser_config = browser_config
+        .with_head()
+        .arg("--auto-open-devtools-for-tabs");
     if !headed {
         // Use new headless mode for better compatibility
-        config = config.arg("--headless=new");
+        browser_config = browser_config.arg("--headless=new");
     }
-    let (mut browser, mut handler) = Browser::launch(config.build().unwrap()).await.unwrap();
+    let (mut browser, mut handler) = Browser::launch(browser_config.build().unwrap())
+        .await
+        .unwrap();
 
     if let Some(child) = browser.get_mut_child()
         && let Some(pid) = child.inner.id()
     {
         let _ = CHROME_PID.set(pid);
-        eprintln!("[thrall] Chrome launched (pid {})", pid);
+        log_lifecycle!("[thrall] Chrome launched (pid {})", pid);
     }
 
+    let log_cdp_events = cfg.log_cdp;
     tokio::spawn(async move {
         while let Some(event) = handler.next().await {
-            // Log CDP events for debugging - these include page errors, network issues, etc.
-            eprintln!("[cdp] {:?}", event);
+            if log_cdp_events {
+                eprintln!("[cdp] {:?}", event);
+            }
         }
     });
 
@@ -152,7 +230,8 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
     page.execute(RuntimeEnableParams::default()).await.ok();
     page.execute(EnableParams::default()).await.ok();
 
-    // Set up console logging - always log errors/warnings, optionally log info/debug
+    // Set up console logging
+    let log_console = cfg.log_console;
     let verbose_console = std::env::var("BROWSER_CONSOLE").ok().as_deref() == Some("1");
     let mut console_events = page
         .event_listener::<EventConsoleApiCalled>()
@@ -166,7 +245,7 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
                 chromiumoxide::cdp::js_protocol::runtime::ConsoleApiCalledType::Error
                     | chromiumoxide::cdp::js_protocol::runtime::ConsoleApiCalledType::Warning
             );
-            if is_error || verbose_console {
+            if (log_console && is_error) || verbose_console {
                 let args: Vec<String> = event
                     .args
                     .iter()
@@ -178,24 +257,30 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
     });
 
     // Log JS exceptions
+    let log_js_exceptions = cfg.log_js_exceptions;
     let mut exception_events = page.event_listener::<EventExceptionThrown>().await.unwrap();
     tokio::spawn(async move {
         while let Some(event) = exception_events.next().await {
-            eprintln!("[js:exception] {:?}", event.exception_details);
+            if log_js_exceptions {
+                eprintln!("[js:exception] {:?}", event.exception_details);
+            }
         }
     });
 
-    // Log network requests to see what's loading
+    // Log network requests
+    let log_net = cfg.log_network;
     let mut request_events = page
         .event_listener::<EventRequestWillBeSent>()
         .await
         .unwrap();
     tokio::spawn(async move {
         while let Some(event) = request_events.next().await {
-            eprintln!(
-                "[net:request] {} {}",
-                event.request.method, event.request.url
-            );
+            if log_net {
+                eprintln!(
+                    "[net:request] {} {}",
+                    event.request.method, event.request.url
+                );
+            }
         }
     });
 
@@ -205,34 +290,38 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
         .unwrap();
     tokio::spawn(async move {
         while let Some(event) = response_events.next().await {
-            eprintln!(
-                "[net:response] {} {} ({})",
-                event.response.status, event.response.url, &event.response.mime_type
-            );
+            if log_net {
+                eprintln!(
+                    "[net:response] {} {} ({})",
+                    event.response.status, event.response.url, &event.response.mime_type
+                );
+            }
         }
     });
 
     let mut failed_events = page.event_listener::<EventLoadingFailed>().await.unwrap();
     tokio::spawn(async move {
         while let Some(event) = failed_events.next().await {
-            eprintln!("[net:FAILED] {:?} - {}", event.request_id, event.error_text);
+            if log_net {
+                eprintln!("[net:FAILED] {:?} - {}", event.request_id, event.error_text);
+            }
         }
     });
 
-    eprintln!("[thrall] Network logging enabled");
+    log_lifecycle!("[thrall] Event listeners configured");
 
     // Start HTTP server for the bundle (file:// URLs don't work well in headless mode)
     let bundle_path = find_browser_bundle().expect("Could not find browser-bundle/dist/index.html");
     let dist_dir = bundle_path.parent().unwrap().to_path_buf();
     let http_port = start_http_file_server(dist_dir).await;
-    eprintln!("[thrall] HTTP file server on port {}", http_port);
+    log_lifecycle!("[thrall] HTTP file server on port {}", http_port);
 
     // Navigate to the bundle via HTTP, with WebSocket port in the fragment
     let bundle_url = format!("http://127.0.0.1:{}/#{}", http_port, port);
-    eprintln!("[thrall] Loading bundle from: {}", bundle_url);
+    log_lifecycle!("[thrall] Loading bundle from: {}", bundle_url);
 
     page.goto(&bundle_url).await.unwrap();
-    eprintln!("[thrall] Page navigation started, waiting for WASM to connect...");
+    log_lifecycle!("[thrall] Page navigation started, waiting for WASM to connect...");
 
     let (conn_tx, conn_rx) = watch::channel::<Option<ConnectionHandle>>(None);
     let listener_handle = tokio::spawn(accept_connections(listener, conn_tx));
@@ -258,7 +347,7 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
                     let _ = response_tx.send(Some(result));
                 }
                 Err(e) => {
-                    eprintln!("[thrall] test_patch error: {:?}", e);
+                    log_lifecycle!("[thrall] test_patch error: {:?}", e);
                     let _ = response_tx.send(None);
                 }
             },
@@ -271,7 +360,7 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
                     let _ = response_tx.send(Some(result));
                 }
                 Err(e) => {
-                    eprintln!("[thrall] test_roundtrip error: {:?}", e);
+                    log_lifecycle!("[thrall] test_roundtrip error: {:?}", e);
                     let _ = response_tx.send(None);
                 }
             },
@@ -281,7 +370,7 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
                         let _ = response_tx.send(Some(result));
                     }
                     Err(e) => {
-                        eprintln!("[thrall] parse_to_dom error: {:?}", e);
+                        log_lifecycle!("[thrall] parse_to_dom error: {:?}", e);
                         let _ = response_tx.send(None);
                     }
                 }
@@ -314,14 +403,14 @@ async fn get_or_fetch_chrome() -> Option<PathBuf> {
     if let Ok(chrome_path) = std::env::var("CHROME_PATH") {
         let path = PathBuf::from(chrome_path);
         if path.exists() {
-            eprintln!("[thrall] Using Chrome from CHROME_PATH: {}", path.display());
+            log_lifecycle!("[thrall] Using Chrome from CHROME_PATH: {}", path.display());
             return Some(path);
         }
     }
 
     // Check if we should skip auto-download (use system Chrome)
     if std::env::var("THRALL_NO_DOWNLOAD").is_ok() {
-        eprintln!("[thrall] THRALL_NO_DOWNLOAD set, using system Chrome");
+        log_lifecycle!("[thrall] THRALL_NO_DOWNLOAD set, using system Chrome");
         return None;
     }
 
@@ -331,7 +420,7 @@ async fn get_or_fetch_chrome() -> Option<PathBuf> {
         .join("thrall")
         .join("chrome");
 
-    eprintln!("[thrall] Fetching Chrome to {}...", cache_dir.display());
+    log_lifecycle!("[thrall] Fetching Chrome to {}...", cache_dir.display());
 
     tokio::fs::create_dir_all(&cache_dir).await.ok()?;
 
@@ -345,12 +434,12 @@ async fn get_or_fetch_chrome() -> Option<PathBuf> {
     // fetch() handles caching internally - it won't re-download if already present
     match fetcher.fetch().await {
         Ok(info) => {
-            eprintln!("[thrall] Using Chrome: {}", info.executable_path.display());
+            log_lifecycle!("[thrall] Using Chrome: {}", info.executable_path.display());
             Some(info.executable_path)
         }
         Err(e) => {
-            eprintln!("[thrall] Failed to fetch Chrome: {:?}", e);
-            eprintln!("[thrall] Will try system Chrome instead");
+            log_lifecycle!("[thrall] Failed to fetch Chrome: {:?}", e);
+            log_lifecycle!("[thrall] Will try system Chrome instead");
             None
         }
     }
@@ -363,7 +452,7 @@ fn find_browser_bundle() -> Option<std::path::PathBuf> {
     // Try CARGO_MANIFEST_DIR first (most reliable in cargo test)
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
         let manifest_path = std::path::PathBuf::from(&manifest_dir);
-        eprintln!("[thrall] CARGO_MANIFEST_DIR: {}", manifest_dir);
+        log_lifecycle!("[thrall] CARGO_MANIFEST_DIR: {}", manifest_dir);
 
         // From hotmeal/fuzz (when running cargo test from fuzz dir)
         let path1 = manifest_path
@@ -395,7 +484,7 @@ fn find_browser_bundle() -> Option<std::path::PathBuf> {
 
     // Fallback: try relative to current working directory
     if let Ok(cwd) = std::env::current_dir() {
-        eprintln!("[thrall] CWD: {}", cwd.display());
+        log_lifecycle!("[thrall] CWD: {}", cwd.display());
 
         // Check: ./browser-bundle/dist/index.html
         let path4 = cwd.join("browser-bundle").join("dist").join(index_html);
@@ -422,40 +511,40 @@ async fn accept_connections(
     conn_tx: watch::Sender<Option<ConnectionHandle>>,
 ) {
     loop {
-        eprintln!(
+        log_lifecycle!(
             "[thrall] Waiting for browser to connect on {:?}...",
             listener.local_addr()
         );
         match listener.accept().await {
             Ok((stream, addr)) => {
-                eprintln!(
+                log_lifecycle!(
                     "[thrall] TCP accept from {}, upgrading to WebSocket...",
                     addr
                 );
                 match accept_async(stream).await {
                     Ok(ws_stream) => {
-                        eprintln!(
+                        log_lifecycle!(
                             "[thrall] WebSocket upgrade complete, starting roam handshake..."
                         );
                         let transport = WsTransport::new(ws_stream);
                         match ws_accept(transport, HandshakeConfig::default(), NoDispatcher).await {
                             Ok((handle, _incoming, driver)) => {
-                                eprintln!("[thrall] Roam handshake complete");
+                                log_lifecycle!("[thrall] Roam handshake complete");
                                 tokio::spawn(async move {
                                     if let Err(e) = driver.run().await {
-                                        eprintln!("[thrall] Driver error: {:?}", e);
+                                        log_lifecycle!("[thrall] Driver error: {:?}", e);
                                     }
                                 });
                                 let _ = conn_tx.send(Some(handle));
-                                eprintln!("[thrall] Ready to process requests");
+                                log_lifecycle!("[thrall] Ready to process requests");
                             }
-                            Err(e) => eprintln!("[thrall] Roam handshake failed: {:?}", e),
+                            Err(e) => log_lifecycle!("[thrall] Roam handshake failed: {:?}", e),
                         }
                     }
-                    Err(e) => eprintln!("[thrall] WebSocket upgrade failed: {:?}", e),
+                    Err(e) => log_lifecycle!("[thrall] WebSocket upgrade failed: {:?}", e),
                 }
             }
-            Err(e) => eprintln!("[thrall] Accept failed: {:?}", e),
+            Err(e) => log_lifecycle!("[thrall] Accept failed: {:?}", e),
         }
     }
 }
@@ -466,7 +555,7 @@ static PANIC_HOOK_SET: OnceLock<()> = OnceLock::new();
 
 fn kill_chrome() {
     if let Some(&pid) = CHROME_PID.get() {
-        eprintln!("[thrall] Killing Chrome (pid {})", pid);
+        log_lifecycle!("[thrall] Killing Chrome (pid {})", pid);
         unsafe {
             libc::kill(pid as i32, libc::SIGKILL);
         }

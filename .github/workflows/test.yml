@@ -136,4 +136,4 @@ jobs:
 
       - name: Run browser tests
         working-directory: hotmeal/fuzz
-        run: cargo nextest run browser_tests --no-capture -j1
+        run: cargo nextest run -E 'test(browser)' --no-capture -j1

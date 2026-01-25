@@ -1,9 +1,20 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 
+use std::sync::Once;
+
 // Re-export thrall's browser control functions
 pub use thrall::{DomNode, OwnedPatches, RoundtripResult, TestPatchResult};
 pub use thrall::{parse_to_dom, test_patch, test_roundtrip};
+
+static THRALL_INIT: Once = Once::new();
+
+/// Initialize thrall with quiet config for fuzzing (call once at startup).
+pub fn init_thrall_quiet() {
+    THRALL_INIT.call_once(|| {
+        thrall::configure(thrall::ThrallConfig::quiet());
+    });
+}
 
 mod dom_generator;
 pub use dom_generator::*;
