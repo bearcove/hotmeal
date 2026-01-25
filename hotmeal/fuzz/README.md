@@ -4,20 +4,20 @@ This directory contains fuzz targets for hotmeal.
 
 ## Fuzz Targets
 
+### `apply`
+
+Tests native diff and patch application with full trace capture. Generates random HTML pairs, computes patches, applies them, and verifies the result matches the expected output.
+
+```bash
+cargo fuzz run apply -- -dict=html.dict -max_len=65536
+```
+
 ### `parse_parity`
 
 Compares html5ever parsing against the browser's DOMParser to ensure both produce equivalent DOM trees.
 
 ```bash
 cargo fuzz run parse_parity
-```
-
-### `apply`
-
-Tests native diff and patch application with full trace capture. Generates random HTML pairs, computes patches, applies them, and verifies the result matches the expected output.
-
-```bash
-cargo fuzz run apply
 ```
 
 ### `apply_parity`
@@ -28,12 +28,12 @@ Tests that patches computed natively produce the same results when applied via b
 cargo fuzz run apply_parity
 ```
 
-### `roundtrip`
+### `apply_structured`
 
 Uses a structured DOM generator to create complex, valid HTML documents. Tests the full diff/patch roundtrip on these structured inputs.
 
 ```bash
-cargo fuzz run roundtrip
+cargo fuzz run apply_structured
 ```
 
 ## Browser Fuzzing
