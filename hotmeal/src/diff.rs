@@ -212,7 +212,7 @@ pub struct PropChange<'a> {
 }
 
 /// Operations to transform the DOM.
-#[derive(Debug, Clone, PartialEq, Eq, facet::Facet)]
+#[derive(Clone, PartialEq, Eq, facet::Facet)]
 #[repr(u8)]
 pub enum Patch<'a> {
     /// Insert an element at a position.
@@ -274,6 +274,99 @@ pub enum Patch<'a> {
         path: NodePath,
         changes: Vec<PropChange<'a>>,
     },
+}
+
+impl<'a> std::fmt::Debug for Patch<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Patch::InsertElement {
+                at,
+                tag,
+                attrs,
+                children,
+                detach_to_slot,
+            } => {
+                write!(f, "Insert <{}> @{:?}", tag, at.0.0.as_slice())?;
+                if !attrs.is_empty() {
+                    write!(f, " ({} attrs)", attrs.len())?;
+                }
+                if !children.is_empty() {
+                    write!(f, " ({} children)", children.len())?;
+                }
+                if let Some(slot) = detach_to_slot {
+                    write!(f, " →slot{}", slot)?;
+                }
+                Ok(())
+            }
+            Patch::InsertText {
+                at,
+                text,
+                detach_to_slot,
+            } => {
+                let preview: String = text.chars().take(20).collect();
+                write!(f, "Insert text {:?} @{:?}", preview, at.0.0.as_slice())?;
+                if let Some(slot) = detach_to_slot {
+                    write!(f, " →slot{}", slot)?;
+                }
+                Ok(())
+            }
+            Patch::InsertComment {
+                at,
+                text,
+                detach_to_slot,
+            } => {
+                let preview: String = text.chars().take(20).collect();
+                write!(f, "Insert comment {:?} @{:?}", preview, at.0.0.as_slice())?;
+                if let Some(slot) = detach_to_slot {
+                    write!(f, " →slot{}", slot)?;
+                }
+                Ok(())
+            }
+            Patch::Remove { node } => {
+                write!(f, "Remove @{:?}", node.0.0.as_slice())
+            }
+            Patch::SetText { path, text } => {
+                let preview: String = text.chars().take(20).collect();
+                write!(f, "SetText {:?} @{:?}", preview, path.0.as_slice())
+            }
+            Patch::SetAttribute { path, name, value } => {
+                write!(
+                    f,
+                    "SetAttr {}={:?} @{:?}",
+                    name.local,
+                    value.as_ref(),
+                    path.0.as_slice()
+                )
+            }
+            Patch::RemoveAttribute { path, name } => {
+                write!(f, "RemoveAttr {} @{:?}", name.local, path.0.as_slice())
+            }
+            Patch::Move {
+                from,
+                to,
+                detach_to_slot,
+            } => {
+                write!(
+                    f,
+                    "Move {:?} → {:?}",
+                    from.0.0.as_slice(),
+                    to.0.0.as_slice()
+                )?;
+                if let Some(slot) = detach_to_slot {
+                    write!(f, " →slot{}", slot)?;
+                }
+                Ok(())
+            }
+            Patch::UpdateProps { path, changes } => {
+                write!(
+                    f,
+                    "UpdateProps @{:?} ({} changes)",
+                    path.0.as_slice(),
+                    changes.len()
+                )
+            }
+        }
+    }
 }
 
 /// Node kind in the HTML tree.

@@ -93,6 +93,23 @@ impl<'a> Document<'a> {
         self.arena[id].get()
     }
 
+    /// Get a human-readable label for a node (for debugging)
+    fn node_label(&self, id: NodeId) -> String {
+        let data = self.get(id);
+        match &data.kind {
+            NodeKind::Element(elem) => format!("<{}>", elem.tag),
+            NodeKind::Text(t) => {
+                let preview: String = t.chars().take(10).collect();
+                format!("text({:?})", preview)
+            }
+            NodeKind::Comment(t) => {
+                let preview: String = t.chars().take(10).collect();
+                format!("comment({:?})", preview)
+            }
+            NodeKind::Document => "#document".to_string(),
+        }
+    }
+
     /// Get mutable reference to node data
     pub fn get_mut(&mut self, id: NodeId) -> &mut NodeData<'a> {
         self.arena[id].get_mut()
@@ -432,7 +449,7 @@ impl<'a> Document<'a> {
         patch: Patch<'a>,
         slots: &mut HashMap<u32, NodeId>,
     ) -> Result<(), DiffError> {
-        debug!("Applying patch: {:#?}", patch);
+        debug!("Applying patch: {:?}", patch);
         match patch {
             Patch::InsertElement {
                 at,
@@ -624,16 +641,22 @@ impl<'a> Document<'a> {
         let (parent_id, position) = self.get_slot_parent(path, slots)?;
 
         debug!(
-            "insert_at: path={:?}, parent={:?}, position={}",
-            path, parent_id, position
+            "insert_at: path={:?} parent={} pos={}",
+            path,
+            self.node_label(parent_id),
+            position
         );
 
         if let Some(slot) = detach_to_slot {
             let children: Vec<_> = parent_id.children(&self.arena).collect();
             debug!(
-                "insert_at: detaching at position {}, children.len()={}",
+                "insert_at: detaching child {} at pos {} to slot{}",
+                children
+                    .get(position)
+                    .map(|c| self.node_label(*c))
+                    .unwrap_or_else(|| "?".to_string()),
                 position,
-                children.len()
+                slot
             );
             if position < children.len() {
                 let displaced = children[position];
@@ -656,11 +679,11 @@ impl<'a> Document<'a> {
         let children: Vec<_> = parent_id.children(&self.arena).collect();
 
         debug!(
-            "insert_at_position: parent={:?}, position={}, children.len()={}, node_to_insert={:?}",
-            parent_id,
+            "insert_at_position: {} under {} at pos {} (has {} children)",
+            self.node_label(node_to_insert),
+            self.node_label(parent_id),
             position,
-            children.len(),
-            node_to_insert
+            children.len()
         );
 
         // Chawathe semantics: fill gaps with empty text nodes
