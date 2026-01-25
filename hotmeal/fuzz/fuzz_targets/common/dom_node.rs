@@ -36,29 +36,3 @@ fn node_to_dom_node(doc: &Document, node_id: hotmeal::NodeId) -> DomNode {
         hotmeal::NodeKind::Document => DomNode::Text(String::new()),
     }
 }
-
-/// Pretty-print a DomNode tree for diffing.
-pub fn pretty_print_dom(node: &DomNode, indent: usize) -> String {
-    let mut out = String::new();
-    let prefix = "  ".repeat(indent);
-    match node {
-        DomNode::Element {
-            tag,
-            attrs,
-            children,
-        } => {
-            out.push_str(&format!("{}<{}", prefix, tag));
-            for attr in attrs {
-                out.push_str(&format!(" {}={:?}", attr.name, attr.value));
-            }
-            out.push_str(">\n");
-            for child in children {
-                out.push_str(&pretty_print_dom(child, indent + 1));
-            }
-            out.push_str(&format!("{}</{}>\n", prefix, tag));
-        }
-        DomNode::Text(text) => out.push_str(&format!("{}TEXT: {:?}\n", prefix, text)),
-        DomNode::Comment(text) => out.push_str(&format!("{}COMMENT: {:?}\n", prefix, text)),
-    }
-    out
-}

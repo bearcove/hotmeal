@@ -61,13 +61,14 @@ fn target(data: &[u8]) {
         eprintln!("\n========== PARSER MISMATCH ==========");
         eprintln!("Input: {:?}", full_a);
         eprintln!("\n--- html5ever tree ---");
-        eprintln!("{}", common::pretty_print_dom(&html5ever_tree, 0));
+        eprintln!("{}", html5ever_tree);
         eprintln!("--- browser tree ---");
-        eprintln!("{}", common::pretty_print_dom(&result.initial_dom_tree, 0));
+        eprintln!("{}", result.initial_dom_tree);
         eprintln!("\n--- diff ---");
-        let h5e_str = common::pretty_print_dom(&html5ever_tree, 0);
-        let browser_str = common::pretty_print_dom(&result.initial_dom_tree, 0);
-        print_diff(&h5e_str, &browser_str);
+        print_diff(
+            &html5ever_tree.to_string(),
+            &result.initial_dom_tree.to_string(),
+        );
         eprintln!("=====================================\n");
         panic!("Parser mismatch detected! Fix html5ever to match browser.");
     }

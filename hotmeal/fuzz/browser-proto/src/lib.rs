@@ -1,5 +1,7 @@
 #![deny(unsafe_code)]
 
+use std::fmt;
+
 use facet::Facet;
 use roam::service;
 
@@ -28,6 +30,38 @@ pub enum DomNode {
 pub struct DomAttr {
     pub name: String,
     pub value: String,
+}
+
+impl fmt::Display for DomNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn write_indented(
+            node: &DomNode,
+            f: &mut fmt::Formatter<'_>,
+            indent: usize,
+        ) -> fmt::Result {
+            let prefix = "  ".repeat(indent);
+            match node {
+                DomNode::Element {
+                    tag,
+                    attrs,
+                    children,
+                } => {
+                    write!(f, "{}<{}", prefix, tag)?;
+                    for attr in attrs {
+                        write!(f, " {}={:?}", attr.name, attr.value)?;
+                    }
+                    writeln!(f, ">")?;
+                    for child in children {
+                        write_indented(child, f, indent + 1)?;
+                    }
+                    writeln!(f, "{}</{}>", prefix, tag)
+                }
+                DomNode::Text(text) => writeln!(f, "{}TEXT: {:?}", prefix, text),
+                DomNode::Comment(text) => writeln!(f, "{}COMMENT: {:?}", prefix, text),
+            }
+        }
+        write_indented(self, f, 0)
+    }
 }
 
 /// Wrapper for owned patches that can be sent over roam.
