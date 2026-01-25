@@ -2,16 +2,50 @@
 
 This directory contains fuzz targets for hotmeal.
 
+## Fuzz Targets
+
+### `parse_parity`
+
+Compares html5ever parsing against the browser's DOMParser to ensure both produce equivalent DOM trees.
+
+```bash
+cargo fuzz run parse_parity
+```
+
+### `apply`
+
+Tests native diff and patch application with full trace capture. Generates random HTML pairs, computes patches, applies them, and verifies the result matches the expected output.
+
+```bash
+cargo fuzz run apply
+```
+
+### `apply_parity`
+
+Tests that patches computed natively produce the same results when applied via browser DOM APIs. This catches any differences between hotmeal's native patch application and the browser's DOM manipulation.
+
+```bash
+cargo fuzz run apply_parity
+```
+
+### `roundtrip`
+
+Uses a structured DOM generator to create complex, valid HTML documents. Tests the full diff/patch roundtrip on these structured inputs.
+
+```bash
+cargo fuzz run roundtrip
+```
+
 ## Browser Fuzzing
 
-The `browser2` target tests hotmeal's diff/patch system against a real browser's DOM.
+The `parse_parity` and `apply_parity` targets test hotmeal against a real browser's DOM.
 
 ### How it works
 
 1. The fuzzer generates random HTML pairs (old, new)
 2. Both are normalized through the browser's DOMParser
 3. hotmeal computes patches to transform old → new
-4. Patches are applied via the browser's DOM APIs
+4. Patches are applied via the browser's DOM APIs (for `apply_parity`)
 5. The result is compared against the expected output
 
 ### Building the WASM bundle
@@ -21,13 +55,6 @@ The browser fuzzer requires a WASM build of the `browser-wasm` crate. To rebuild
 ```bash
 cd hotmeal/fuzz/browser-wasm
 wasm-pack build --target web --out-dir ../browser-bundle/dist
-```
-
-### Running the browser fuzzer
-
-```bash
-cd hotmeal/fuzz
-cargo fuzz run browser2
 ```
 
 ### Known limitations
