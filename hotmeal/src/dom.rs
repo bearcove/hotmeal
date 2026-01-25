@@ -1570,7 +1570,23 @@ impl<'a> TreeSink for ArenaSink<'a> {
             for (name, value) in converted_attrs {
                 // Only add if not already present
                 if !elem.attrs.iter().any(|(k, _)| k == &name) {
+                    trace!(
+                        target_id = %node_id_short(*target),
+                        tag = %elem.tag.as_ref(),
+                        attr_ns = %name.ns,
+                        attr_name = %name.local.as_ref(),
+                        attr_value = %value.as_ref(),
+                        "add_attrs_if_missing: adding attribute"
+                    );
                     elem.attrs.push((name, value));
+                } else {
+                    trace!(
+                        target_id = %node_id_short(*target),
+                        tag = %elem.tag.as_ref(),
+                        attr_ns = %name.ns,
+                        attr_name = %name.local.as_ref(),
+                        "add_attrs_if_missing: attribute already present"
+                    );
                 }
             }
         }
