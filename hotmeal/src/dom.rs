@@ -1092,6 +1092,33 @@ fn dump_arena_subtree<'a>(
     out
 }
 
+struct LazyTreeDump<'a> {
+    arena: &'a Arena<NodeData<'a>>,
+    node_id: NodeId,
+    highlights: &'a [(NodeId, &'static str, &'static str)],
+}
+
+impl<'a> LazyTreeDump<'a> {
+    fn new(
+        arena: &'a Arena<NodeData<'a>>,
+        node_id: NodeId,
+        highlights: &'a [(NodeId, &'static str, &'static str)],
+    ) -> Self {
+        Self {
+            arena,
+            node_id,
+            highlights,
+        }
+    }
+}
+
+impl<'a> std::fmt::Display for LazyTreeDump<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let tree = dump_arena_subtree(self.arena, self.node_id, self.highlights);
+        write!(f, "\n{tree}")
+    }
+}
+
 impl<'a> ArenaSink<'a> {
     fn new(input: &'a str) -> Self {
         let mut arena = Arena::new();
@@ -1230,7 +1257,51 @@ impl<'a> TreeSink for ArenaSink<'a> {
                     node_id = %node_id_short(node),
                     "append: node"
                 );
+                let highlights = [
+                    (*parent, "\x1b[32m", "PARENT"),
+                    (node, "\x1b[36m", "INSERTED"),
+                ];
+                trace!(
+                    parent_id = %node_id_short(*parent),
+                    node_id = %node_id_short(node),
+                    tree = %LazyTreeDump::new(&arena, *parent, &highlights),
+                    "append: before insert"
+                );
+                if let Some(grandparent) = arena[*parent].parent() {
+                    let gp_highlights = [
+                        (grandparent, "\x1b[35m", "GRANDPARENT"),
+                        (*parent, "\x1b[32m", "PARENT"),
+                        (node, "\x1b[36m", "INSERTED"),
+                    ];
+                    trace!(
+                        parent_id = %node_id_short(*parent),
+                        node_id = %node_id_short(node),
+                        grandparent_id = %node_id_short(grandparent),
+                        tree = %LazyTreeDump::new(&arena, grandparent, &gp_highlights),
+                        "append: before insert (grandparent)"
+                    );
+                }
                 parent.append(node, &mut *arena);
+                trace!(
+                    parent_id = %node_id_short(*parent),
+                    node_id = %node_id_short(node),
+                    tree = %LazyTreeDump::new(&arena, *parent, &highlights),
+                    "append: after insert"
+                );
+                if let Some(grandparent) = arena[*parent].parent() {
+                    let gp_highlights = [
+                        (grandparent, "\x1b[35m", "GRANDPARENT"),
+                        (*parent, "\x1b[32m", "PARENT"),
+                        (node, "\x1b[36m", "INSERTED"),
+                    ];
+                    trace!(
+                        parent_id = %node_id_short(*parent),
+                        node_id = %node_id_short(node),
+                        grandparent_id = %node_id_short(grandparent),
+                        tree = %LazyTreeDump::new(&arena, grandparent, &gp_highlights),
+                        "append: after insert (grandparent)"
+                    );
+                }
             }
             NodeOrText::AppendText(text) => {
                 let text_len = text.len();
@@ -1896,6 +1967,73 @@ mod tests {
         match &doc.get(children[1]).kind {
             NodeKind::Element(elem) => assert_eq!(elem.tag.as_ref(), "table"),
             other => panic!("Expected table element, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parser_mismatch_li_u_svg() {
+        // Regression test for <li><u><li><svg> mismatch
+        // Browser: second <li> contains an implied <u> wrapping <svg>
+        // html5ever should match browser output here
+        let html = t("<!DOCTYPE html><html><body><li><u><li><svg></body></html>");
+        let doc = parse(&html);
+
+        let body = doc.body().expect("should have body");
+        let children: Vec<_> = body.children(&doc.arena).collect();
+
+        // Expect two <li> elements
+        assert_eq!(children.len(), 2, "Should have two <li> siblings");
+
+        let first_li = children[0];
+        let second_li = children[1];
+
+        match &doc.get(first_li).kind {
+            NodeKind::Element(elem) => assert_eq!(elem.tag.as_ref(), "li"),
+            other => panic!("Expected first child to be <li>, got {:?}", other),
+        }
+
+        match &doc.get(second_li).kind {
+            NodeKind::Element(elem) => assert_eq!(elem.tag.as_ref(), "li"),
+            other => panic!("Expected second child to be <li>, got {:?}", other),
+        }
+
+        // First <li> should contain a <u>
+        let first_li_children: Vec<_> = first_li.children(&doc.arena).collect();
+        assert_eq!(
+            first_li_children.len(),
+            1,
+            "First <li> should have one child"
+        );
+
+        match &doc.get(first_li_children[0]).kind {
+            NodeKind::Element(elem) => assert_eq!(elem.tag.as_ref(), "u"),
+            other => panic!("Expected first <li> child to be <u>, got {:?}", other),
+        }
+
+        // Second <li> should contain a <u>, which contains <svg>
+        let second_li_children: Vec<_> = second_li.children(&doc.arena).collect();
+        assert_eq!(
+            second_li_children.len(),
+            1,
+            "Second <li> should have one child"
+        );
+
+        let second_u = second_li_children[0];
+        match &doc.get(second_u).kind {
+            NodeKind::Element(elem) => assert_eq!(elem.tag.as_ref(), "u"),
+            other => panic!("Expected second <li> child to be <u>, got {:?}", other),
+        }
+
+        let second_u_children: Vec<_> = second_u.children(&doc.arena).collect();
+        assert_eq!(
+            second_u_children.len(),
+            1,
+            "Second <u> should have one child"
+        );
+
+        match &doc.get(second_u_children[0]).kind {
+            NodeKind::Element(elem) => assert_eq!(elem.tag.as_ref(), "svg"),
+            other => panic!("Expected <u> to wrap <svg>, got {:?}", other),
         }
     }
 }
