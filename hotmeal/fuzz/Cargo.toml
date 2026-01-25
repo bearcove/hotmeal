@@ -28,6 +28,15 @@ similar = "2.7"
 [dependencies.hotmeal]
 path = ".."
 
+# Native diff+apply roundtrip (no browser)
+[[bin]]
+name = "apply"
+path = "fuzz_targets/apply.rs"
+test = false
+doc = false
+bench = false
+
+# Structured DOM generation + native diff+apply
 [[bin]]
 name = "roundtrip"
 path = "fuzz_targets/roundtrip.rs"
@@ -35,23 +44,18 @@ test = false
 doc = false
 bench = false
 
+# html5ever vs browser DOMParser comparison
 [[bin]]
-name = "mutate"
-path = "fuzz_targets/mutate.rs"
+name = "parse_parity"
+path = "fuzz_targets/parse_parity.rs"
 test = false
 doc = false
 bench = false
 
+# Native diff + browser apply, step-by-step DOM comparison
 [[bin]]
-name = "browser"
-path = "fuzz_targets/browser.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "browser2"
-path = "fuzz_targets/browser2.rs"
+name = "apply_parity"
+path = "fuzz_targets/apply_parity.rs"
 test = false
 doc = false
 bench = false
