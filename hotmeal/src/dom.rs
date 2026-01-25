@@ -828,6 +828,20 @@ impl Namespace {
     }
 }
 
+fn has_doctype_prefix(input: &str) -> bool {
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let doctype = b"<!doctype";
+    i + doctype.len() <= bytes.len()
+        && bytes[i..i + doctype.len()]
+            .iter()
+            .zip(doctype)
+            .all(|(b, d)| b.to_ascii_lowercase() == *d)
+}
+
 /// Parse HTML from a StrTendril with zero-copy borrowing.
 ///
 /// The returned Document borrows from the tendril's buffer, so substrings
@@ -848,8 +862,7 @@ pub fn parse(tendril: &StrTendril) -> Document<'_> {
 
     // Prepend DOCTYPE if not present to ensure no-quirks mode parsing.
     // This matches browser behavior for innerHTML which always uses no-quirks.
-    let input_lower = input_ref.to_ascii_lowercase();
-    let has_doctype = input_lower.trim_start().starts_with("<!doctype");
+    let has_doctype = has_doctype_prefix(input_ref);
 
     if has_doctype {
         parse_document(sink, Default::default()).one(tendril.clone())
@@ -1164,6 +1177,7 @@ impl<'a> TreeSink for ArenaSink<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use facet_testhelpers::test;
 
     /// Helper to create a StrTendril from a string
     fn t(s: &str) -> StrTendril {
@@ -1250,6 +1264,14 @@ mod tests {
 
         assert!(doc.doctype.is_some());
         assert_eq!(doc.doctype.as_ref().map(|d| d.as_ref()), Some("html"));
+    }
+
+    #[test]
+    fn test_has_doctype_prefix() {
+        assert!(has_doctype_prefix("<!DOCTYPE html>"));
+        assert!(has_doctype_prefix("   <!DoCtYpE html>"));
+        assert!(!has_doctype_prefix("<html><body></body></html>"));
+        assert!(!has_doctype_prefix("<!-- <!doctype html> -->"));
     }
 
     #[test]
@@ -1530,6 +1552,39 @@ mod tests {
                 assert_eq!(elem.attrs[0].1.as_ref(), "");
             }
             other => panic!("Expected Element node, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_foster_parented_text_merging() {
+        // Test that foster-parented text nodes get merged
+        // Input: <table>+<tr>more</table>
+        // The "+" and "more" should be foster-parented before the table
+        // and merged into a single text node
+        let html = t("<!DOCTYPE html><html><body><table>+<tr>more</table></body></html>");
+        let doc = parse(&html);
+
+        let body = doc.body().expect("should have body");
+        let children: Vec<_> = body.children(&doc.arena).collect();
+
+        println!("Body has {} children", children.len());
+        for (i, child_id) in children.iter().enumerate() {
+            let node = doc.get(*child_id);
+            println!("  Child {}: {:?}", i, node.kind);
+        }
+
+        // Should have 2 children: merged text node + table
+        // Browser produces: TEXT "+more" then TABLE
+        assert_eq!(children.len(), 2, "Should have text + table");
+
+        match &doc.get(children[0]).kind {
+            NodeKind::Text(t) => assert_eq!(t.as_ref(), "+more", "Text should be merged"),
+            other => panic!("Expected Text node, got {:?}", other),
+        }
+
+        match &doc.get(children[1]).kind {
+            NodeKind::Element(elem) => assert_eq!(elem.tag.as_ref(), "table"),
+            other => panic!("Expected table element, got {:?}", other),
         }
     }
 }
