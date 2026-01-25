@@ -4,7 +4,7 @@
 //! this crate lets you control a Chrome browser for testing purposes.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use browser_proto::BrowserClient;
 pub use browser_proto::{DomNode, OwnedPatches, RoundtripResult, TestPatchResult};
@@ -21,6 +21,7 @@ use chromiumoxide::{
 use futures_util::StreamExt;
 use roam_stream::{ConnectionHandle, HandshakeConfig, NoDispatcher};
 use roam_websocket::{WsTransport, ws_accept};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::accept_async;
@@ -220,9 +221,14 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
 
     eprintln!("[thrall] Network logging enabled");
 
-    // NOW navigate to the bundle
+    // Start HTTP server for the bundle (file:// URLs don't work well in headless mode)
     let bundle_path = find_browser_bundle().expect("Could not find browser-bundle/dist/index.html");
-    let bundle_url = format!("file://{}#{}", bundle_path.display(), port);
+    let dist_dir = bundle_path.parent().unwrap().to_path_buf();
+    let http_port = start_http_file_server(dist_dir).await;
+    eprintln!("[thrall] HTTP file server on port {}", http_port);
+
+    // Navigate to the bundle via HTTP, with WebSocket port in the fragment
+    let bundle_url = format!("http://127.0.0.1:{}/#{}", http_port, port);
     eprintln!("[thrall] Loading bundle from: {}", bundle_url);
 
     page.goto(&bundle_url).await.unwrap();
@@ -492,4 +498,76 @@ extern "C" fn signal_handler(sig: libc::c_int) {
         libc::signal(sig, libc::SIG_DFL);
         libc::raise(sig);
     }
+}
+
+/// Simple HTTP file server for serving the browser bundle.
+/// Returns the port it's listening on.
+async fn start_http_file_server(dist_dir: PathBuf) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let dist_dir = Arc::new(dist_dir);
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _addr)) = listener.accept().await else {
+                continue;
+            };
+            let dist_dir = Arc::clone(&dist_dir);
+
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                let Ok(n) = stream.read(&mut buf).await else {
+                    return;
+                };
+                let request = String::from_utf8_lossy(&buf[..n]);
+
+                // Parse the request path from "GET /path HTTP/1.1"
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/");
+
+                // Map / to /index.html
+                let path = if path == "/" { "/index.html" } else { path };
+                let path = path.trim_start_matches('/');
+
+                // Security: prevent path traversal
+                if path.contains("..") {
+                    let response = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    return;
+                }
+
+                let file_path = dist_dir.join(path);
+
+                match tokio::fs::read(&file_path).await {
+                    Ok(contents) => {
+                        let content_type = match file_path.extension().and_then(|e| e.to_str()) {
+                            Some("html") => "text/html",
+                            Some("js") => "text/javascript",
+                            Some("wasm") => "application/wasm",
+                            Some("css") => "text/css",
+                            Some("json") => "application/json",
+                            _ => "application/octet-stream",
+                        };
+
+                        let header = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\n\r\n",
+                            content_type,
+                            contents.len()
+                        );
+                        let _ = stream.write_all(header.as_bytes()).await;
+                        let _ = stream.write_all(&contents).await;
+                    }
+                    Err(_) => {
+                        let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                        let _ = stream.write_all(response.as_bytes()).await;
+                    }
+                }
+            });
+        }
+    });
+
+    port
 }
