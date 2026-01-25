@@ -143,8 +143,10 @@ pub struct PatchStep {
     pub index: u32,
     /// Debug representation of the patch being applied.
     pub patch_debug: String,
-    /// The innerHTML after applying this patch.
+    /// The innerHTML after applying this patch (or at failure).
     pub html_after: String,
-    /// Full DOM tree after applying this patch.
+    /// Full DOM tree after applying this patch (or at failure).
     pub dom_tree: DomNode,
+    /// Error message if this patch failed, None if successful.
+    pub error: Option<String>,
 }

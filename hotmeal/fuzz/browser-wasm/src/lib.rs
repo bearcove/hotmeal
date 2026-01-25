@@ -246,11 +246,22 @@ fn run_roundtrip(old_html: &str, new_html: &str) -> Result<RoundtripResult, Stri
     // Apply patches one at a time, capturing state after each
     let mut slots = hotmeal_wasm::Slots::new();
     let mut patch_trace = Vec::with_capacity(patches.len());
+    let mut had_error = false;
 
     for (i, patch) in patches.iter().enumerate() {
         log(&format!("[browser-wasm] applying patch {}: {:?}", i, patch));
-        hotmeal_wasm::apply_patches_with_slots(&[patch.clone()], &mut slots)
-            .map_err(|e| format!("patch {} failed: {:?}", i, e))?;
+
+        let error = if had_error {
+            Some("skipped due to previous error".to_string())
+        } else {
+            match hotmeal_wasm::apply_patches_with_slots(&[patch.clone()], &mut slots) {
+                Ok(()) => None,
+                Err(e) => {
+                    had_error = true;
+                    Some(format!("{:?}", e))
+                }
+            }
+        };
 
         let html_after = body.inner_html();
         let dom_tree = node_to_dom_node(&body.clone().into());
@@ -260,6 +271,7 @@ fn run_roundtrip(old_html: &str, new_html: &str) -> Result<RoundtripResult, Stri
             patch_debug: format!("{:?}", patch),
             html_after,
             dom_tree,
+            error,
         });
     }
 
@@ -271,10 +283,7 @@ fn run_roundtrip(old_html: &str, new_html: &str) -> Result<RoundtripResult, Stri
         result_html, normalized_new
     ));
 
-    if result_html != normalized_new {
-        return Err("result doesn't match expected".to_string());
-    }
-
+    // Don't fail early - let the fuzzer compare traces
     Ok(RoundtripResult {
         normalized_old,
         normalized_new,
@@ -319,14 +328,22 @@ fn run_test(old_html: &str, patches: Vec<Patch<'static>>) -> Result<TestPatchRes
 
     let mut slots = hotmeal_wasm::Slots::new();
     let mut patch_trace = Vec::with_capacity(patches.len());
+    let mut had_error = false;
 
     for (i, patch) in patches.iter().enumerate() {
         log(&format!("[browser-wasm] applying patch {}: {:?}", i, patch));
-        hotmeal_wasm::apply_patches_with_slots(&[patch.clone()], &mut slots)
-            .map_err(|e| format!("patch {} failed: {:?}", i, e))?;
 
-        let html_after = hotmeal_wasm::get_body_inner_html()
-            .map_err(|e| format!("get_body_inner_html after patch {} failed: {:?}", i, e))?;
+        let error = if had_error {
+            Some("skipped due to previous error".to_string())
+        } else {
+            match hotmeal_wasm::apply_patches_with_slots(&[patch.clone()], &mut slots) {
+                Ok(()) => None,
+                Err(e) => {
+                    had_error = true;
+                    Some(format!("{:?}", e))
+                }
+            }
+        };
 
         let body = web_sys::window()
             .unwrap()
@@ -334,6 +351,7 @@ fn run_test(old_html: &str, patches: Vec<Patch<'static>>) -> Result<TestPatchRes
             .unwrap()
             .body()
             .unwrap();
+        let html_after = body.inner_html();
         let dom_tree = node_to_dom_node(&body.into());
 
         patch_trace.push(PatchStep {
@@ -341,6 +359,7 @@ fn run_test(old_html: &str, patches: Vec<Patch<'static>>) -> Result<TestPatchRes
             patch_debug: format!("{:?}", patch),
             html_after,
             dom_tree,
+            error,
         });
     }
 

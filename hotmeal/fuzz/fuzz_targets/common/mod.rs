@@ -7,6 +7,9 @@ pub use dom_generator::*;
 mod dom_node;
 pub use dom_node::*;
 
+mod patch_trace;
+pub use patch_trace::*;
+
 /// Split raw bytes at 0xFF delimiter into two HTML strings.
 fn split_input(data: &[u8]) -> Option<(String, String)> {
     let pos = data.iter().position(|&b| b == 0xFF)?;

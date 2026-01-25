@@ -3,12 +3,10 @@
 //! Apply parity fuzzer.
 //!
 //! Compares native hotmeal patch application against browser hotmeal-wasm.
-//! Both compute the same diff, then apply patches step-by-step.
-//! After each patch, we compare the full DOM trees to catch any divergence.
+//! Both apply the same patches, and we compare DOM trees at each step.
 
 use hotmeal::StrTendril;
 use libfuzzer_sys::fuzz_target;
-use similar::{ChangeTag, TextDiff};
 
 mod common;
 
@@ -29,62 +27,35 @@ fn target(data: &[u8]) {
     };
 
     // Send to browser worker for roundtrip
-    let Some(result) = common::test_roundtrip(full_a.to_string(), full_b.to_string()) else {
+    let Some(browser_result) = common::test_roundtrip(full_a.to_string(), full_b.to_string())
+    else {
         return;
     };
 
     // Skip cases where browser parsed to empty
-    if result.normalized_old.trim().is_empty() {
+    if browser_result.normalized_old.trim().is_empty() {
         return;
     }
 
-    // Apply patches natively with hotmeal and collect DOM trees after each step
-    let normalized_old_tendril = StrTendril::from(result.normalized_old.clone());
+    // Apply patches natively, capturing the full trace
+    let normalized_old_tendril = StrTendril::from(browser_result.normalized_old.clone());
     let mut native_doc = hotmeal::parse(&normalized_old_tendril);
-    let mut native_slots = native_doc.init_patch_slots();
+    let native_trace = common::PatchTrace::capture(&mut native_doc, &patches);
 
-    // Compare patch traces in lockstep
-    if result.patch_trace.len() != patches.len() {
-        eprintln!("\n========== PATCH COUNT MISMATCH ==========");
-        eprintln!("Browser trace length: {}", result.patch_trace.len());
-        eprintln!("Native patches count: {}", patches.len());
-        eprintln!("===========================================\n");
-        panic!("Patch count mismatch!");
-    }
+    // Convert browser result to our trace format
+    let browser_trace = common::PatchTrace::from(&browser_result);
 
-    for (i, (patch, browser_step)) in patches.iter().zip(result.patch_trace.iter()).enumerate() {
-        // Apply patch natively
-        native_doc
-            .apply_patch_with_slots(patch.clone(), &mut native_slots)
-            .unwrap();
-
-        // Get native DOM tree after this patch
-        let native_tree = common::document_body_to_dom_node(&native_doc);
-
-        // Compare DOM trees
-        if native_tree != browser_step.dom_tree {
-            eprintln!("\n========== APPLY MISMATCH (step {}) ==========", i);
-            eprintln!("Patch: {:?}", browser_step.patch_debug);
-            eprintln!("\n--- Native DOM tree ---");
-            eprintln!("{}", native_tree);
-            eprintln!("\n--- Browser DOM tree ---");
-            eprintln!("{}", browser_step.dom_tree);
-            eprintln!("\n--- diff ---");
-            print_diff(&native_tree.to_string(), &browser_step.dom_tree.to_string());
-            eprintln!("\n===============================================\n");
-            panic!("Apply mismatch at step {}!", i);
-        }
-    }
-}
-
-fn print_diff(expected: &str, actual: &str) {
-    let diff = TextDiff::from_lines(expected, actual);
-    for change in diff.iter_all_changes() {
-        let (sign, color) = match change.tag() {
-            ChangeTag::Delete => ("-", "\x1b[31m"),
-            ChangeTag::Insert => ("+", "\x1b[32m"),
-            ChangeTag::Equal => (" ", ""),
-        };
-        eprint!("{}{}{}\x1b[0m", color, sign, change.value());
+    // Compare traces
+    if let Some(mismatch) = common::compare_traces(&native_trace, &browser_trace) {
+        eprintln!("\n========== APPLY PARITY MISMATCH ==========");
+        eprintln!("Input A: {:?}", full_a);
+        eprintln!("Input B: {:?}", full_b);
+        eprintln!("\n{}", mismatch);
+        eprintln!("\n--- Full Native Trace ---");
+        eprintln!("{}", native_trace);
+        eprintln!("\n--- Full Browser Trace ---");
+        eprintln!("{}", browser_trace);
+        eprintln!("============================================\n");
+        panic!("Apply parity mismatch!");
     }
 }
