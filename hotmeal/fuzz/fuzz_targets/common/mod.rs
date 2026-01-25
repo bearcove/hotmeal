@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 mod browser_worker;
 pub use browser_worker::*;
 

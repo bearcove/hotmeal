@@ -4,6 +4,7 @@
 //! SVG elements, etc. using the `Arbitrary` trait.
 
 #![allow(private_interfaces)]
+#![allow(non_snake_case)] // SVG attributes like viewBox, patternUnits, etc.
 
 use arbitrary::{Arbitrary, Unstructured};
 
