@@ -158,10 +158,10 @@ fn patches_have_invalid_attrs(patches: &[Patch]) -> bool {
             }
             Patch::UpdateProps { changes, .. } => {
                 for change in changes {
-                    if let hotmeal_wasm::PropKey::Attr(ref qn) = change.name {
-                        if !is_valid_attr_name(qn.local.as_ref()) {
-                            return true;
-                        }
+                    if let hotmeal_wasm::PropKey::Attr(ref qn) = change.name
+                        && !is_valid_attr_name(qn.local.as_ref())
+                    {
+                        return true;
                     }
                 }
             }
@@ -174,10 +174,10 @@ fn patches_have_invalid_attrs(patches: &[Patch]) -> bool {
 /// Check if any patch contains elements with invalid tag names.
 fn patches_have_invalid_tags(patches: &[Patch]) -> bool {
     for patch in patches {
-        if let Patch::InsertElement { tag, .. } = patch {
-            if !is_valid_tag_name(tag.as_ref()) {
-                return true;
-            }
+        if let Patch::InsertElement { tag, .. } = patch
+            && !is_valid_tag_name(tag.as_ref())
+        {
+            return true;
         }
     }
     false
@@ -254,8 +254,8 @@ fn run_roundtrip(old_html: &str, new_html: &str) -> Result<RoundtripResult, Stri
         let error = if had_error {
             Some("skipped due to previous error".to_string())
         } else {
-            match hotmeal_wasm::apply_patches_with_slots(&[patch.clone()], &mut slots) {
-                Ok(()) => None,
+            match hotmeal_wasm::apply_patches_with_slots(std::slice::from_ref(patch), &mut slots) {
+                Ok(_) => None,
                 Err(e) => {
                     had_error = true;
                     Some(format!("{:?}", e))
@@ -336,8 +336,8 @@ fn run_test(old_html: &str, patches: Vec<Patch<'static>>) -> Result<TestPatchRes
         let error = if had_error {
             Some("skipped due to previous error".to_string())
         } else {
-            match hotmeal_wasm::apply_patches_with_slots(&[patch.clone()], &mut slots) {
-                Ok(()) => None,
+            match hotmeal_wasm::apply_patches_with_slots(std::slice::from_ref(patch), &mut slots) {
+                Ok(_) => None,
                 Err(e) => {
                     had_error = true;
                     Some(format!("{:?}", e))
