@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use browser_proto::{BrowserFuzzerClient, DomNode, OwnedPatches, RoundtripResult, TestPatchResult};
+use browser_proto::{BrowserClient, DomNode, OwnedPatches, RoundtripResult, TestPatchResult};
 use chromiumoxide::{
     Browser, BrowserConfig,
     cdp::browser_protocol::network::EnableParams,
@@ -15,7 +15,7 @@ use tokio_tungstenite::accept_async;
 
 static CHANNEL: OnceLock<mpsc::UnboundedSender<BrowserRequest>> = OnceLock::new();
 
-/// Internal request enum covering all BrowserFuzzer service methods.
+/// Internal request enum covering all Browser service methods.
 enum BrowserRequest {
     TestPatch {
         old_html: String,
@@ -162,7 +162,7 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await
         };
 
-        let client = BrowserFuzzerClient::new(handle);
+        let client = BrowserClient::new(handle);
 
         match req {
             BrowserRequest::TestPatch {

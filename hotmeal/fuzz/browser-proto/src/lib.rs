@@ -73,7 +73,7 @@ pub struct OwnedPatches(pub Vec<Patch<'static>>);
 /// The browser receives old HTML and patches, applies them to the DOM,
 /// and returns the resulting HTML.
 #[service]
-pub trait BrowserFuzzer {
+pub trait Browser {
     /// Apply patches to HTML in the browser.
     ///
     /// The browser will:

@@ -1,6 +1,6 @@
 use browser_proto::{
-    BrowserFuzzer, BrowserFuzzerDispatcher, DomAttr, DomNode, OwnedPatches, Patch, PatchStep,
-    RoundtripResult, TestPatchResult,
+    Browser, BrowserDispatcher, DomAttr, DomNode, OwnedPatches, Patch, PatchStep, RoundtripResult,
+    TestPatchResult,
 };
 use roam::Context;
 use roam_session::initiate_framed;
@@ -10,7 +10,7 @@ use wasm_bindgen::prelude::*;
 #[derive(Clone)]
 struct Handler;
 
-impl BrowserFuzzer for Handler {
+impl Browser for Handler {
     async fn test_patch(
         &self,
         _cx: &Context,
@@ -369,7 +369,7 @@ pub async fn connect(port: u32) -> Result<(), JsValue> {
 
     web_sys::console::log_1(&"[browser-wasm] connected, starting handshake".into());
 
-    let dispatcher = BrowserFuzzerDispatcher::new(Handler);
+    let dispatcher = BrowserDispatcher::new(Handler);
     let (_handle, _incoming, driver) = initiate_framed(transport, Default::default(), dispatcher)
         .await
         .map_err(|e| format!("handshake failed: {:?}", e))?;

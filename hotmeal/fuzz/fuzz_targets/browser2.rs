@@ -12,7 +12,7 @@
 
 use std::sync::OnceLock;
 
-use browser_proto::{BrowserFuzzerClient, RoundtripResult};
+use browser_proto::{BrowserClient, RoundtripResult};
 use chromiumoxide::{
     Browser, BrowserConfig,
     cdp::browser_protocol::network::EnableParams,
@@ -177,7 +177,7 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<FuzzRequest>) {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         };
 
-        let client = BrowserFuzzerClient::new(handle);
+        let client = BrowserClient::new(handle);
         match client.test_roundtrip(req.old_html, req.new_html).await {
             Ok(result) => {
                 let _ = req.response_tx.send(Some(result));
