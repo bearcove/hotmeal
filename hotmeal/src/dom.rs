@@ -18,6 +18,18 @@ use tendril::StrTendril;
 use crate::diff::{DiffError, InsertContent, NodeRef, Patch, PropKey};
 use crate::{Stem, debug};
 
+#[cfg(feature = "tracing")]
+macro_rules! trace {
+    ($($arg:tt)*) => {
+        tracing::trace!($($arg)*)
+    };
+}
+
+#[cfg(not(feature = "tracing"))]
+macro_rules! trace {
+    ($($arg:tt)*) => {};
+}
+
 /// Arena-based DOM document.
 #[derive(Debug, Clone)]
 pub struct Document<'a> {
@@ -1208,11 +1220,12 @@ impl<'a> TreeSink for ArenaSink<'a> {
         })
     }
 
+    #[cfg_attr(not(feature = "tracing"), allow(unused_variables))]
     fn append(&self, parent: &Self::Handle, child: NodeOrText<Self::Handle>) {
         let mut arena = self.arena.borrow_mut();
         match child {
             NodeOrText::AppendNode(node) => {
-                tracing::trace!(
+                trace!(
                     parent_id = %node_id_short(*parent),
                     node_id = %node_id_short(node),
                     "append: node"
@@ -1222,7 +1235,7 @@ impl<'a> TreeSink for ArenaSink<'a> {
             NodeOrText::AppendText(text) => {
                 let text_len = text.len();
                 let text_preview = text.as_ref().to_string();
-                tracing::trace!(
+                trace!(
                     parent_id = %node_id_short(*parent),
                     text_len,
                     text = text_preview.as_str(),
@@ -1235,7 +1248,7 @@ impl<'a> TreeSink for ArenaSink<'a> {
                     && let NodeKind::Text(existing) = &mut arena[last_child].get_mut().kind
                 {
                     let existing_preview = existing.as_ref();
-                    tracing::trace!(
+                    trace!(
                         parent_id = %node_id_short(*parent),
                         last_child_id = %node_id_short(last_child),
                         text_len,
@@ -1254,7 +1267,7 @@ impl<'a> TreeSink for ArenaSink<'a> {
                     kind: NodeKind::Text(stem),
                     ns: Namespace::Html,
                 });
-                tracing::trace!(
+                trace!(
                     parent_id = %node_id_short(*parent),
                     text_node_id = %node_id_short(text_node),
                     text_len,
@@ -1266,13 +1279,14 @@ impl<'a> TreeSink for ArenaSink<'a> {
         }
     }
 
+    #[cfg_attr(not(feature = "tracing"), allow(unused_variables))]
     fn append_before_sibling(&self, sibling: &Self::Handle, new_node: NodeOrText<Self::Handle>) {
         let mut arena = self.arena.borrow_mut();
 
         match new_node {
             NodeOrText::AppendNode(node) => {
                 let parent = arena[*sibling].parent();
-                tracing::trace!(
+                trace!(
                     sibling_id = %node_id_short(*sibling),
                     node_id = %node_id_short(node),
                     "append_before_sibling: node"
@@ -1282,8 +1296,8 @@ impl<'a> TreeSink for ArenaSink<'a> {
                         (parent, "\x1b[32m", "PARENT"),
                         (*sibling, "\x1b[33m", "SIBLING"),
                     ];
-                    let tree_dump = dump_arena_subtree(&*arena, parent, &highlights);
-                    tracing::trace!(
+                    let tree_dump = dump_arena_subtree(&arena, parent, &highlights);
+                    trace!(
                         sibling_id = %node_id_short(*sibling),
                         parent_id = %node_id_short(parent),
                         tree = %tree_dump,
@@ -1297,8 +1311,8 @@ impl<'a> TreeSink for ArenaSink<'a> {
                         (*sibling, "\x1b[33m", "SIBLING"),
                         (node, "\x1b[36m", "INSERTED"),
                     ];
-                    let tree_dump = dump_arena_subtree(&*arena, parent, &highlights);
-                    tracing::trace!(
+                    let tree_dump = dump_arena_subtree(&arena, parent, &highlights);
+                    trace!(
                         sibling_id = %node_id_short(*sibling),
                         parent_id = %node_id_short(parent),
                         inserted_id = %node_id_short(node),
@@ -1311,7 +1325,7 @@ impl<'a> TreeSink for ArenaSink<'a> {
                 let text_len = text.len();
                 let text_preview = text.as_ref().to_string();
                 let parent = arena[*sibling].parent();
-                tracing::trace!(
+                trace!(
                     sibling_id = %node_id_short(*sibling),
                     text_len,
                     text = text_preview.as_str(),
@@ -1322,8 +1336,8 @@ impl<'a> TreeSink for ArenaSink<'a> {
                         (parent, "\x1b[32m", "PARENT"),
                         (*sibling, "\x1b[33m", "SIBLING"),
                     ];
-                    let tree_dump = dump_arena_subtree(&*arena, parent, &highlights);
-                    tracing::trace!(
+                    let tree_dump = dump_arena_subtree(&arena, parent, &highlights);
+                    trace!(
                         sibling_id = %node_id_short(*sibling),
                         parent_id = %node_id_short(parent),
                         tree = %tree_dump,
@@ -1331,10 +1345,10 @@ impl<'a> TreeSink for ArenaSink<'a> {
                     );
                 }
                 // Try to merge with the previous sibling if it's a text node
-                let prev_sibling = sibling.preceding_siblings(&*arena).next();
+                let prev_sibling = arena[*sibling].previous_sibling();
                 if let Some(prev_sibling) = prev_sibling {
                     let prev_kind = &arena[prev_sibling].get().kind;
-                    tracing::trace!(
+                    trace!(
                         sibling_id = %node_id_short(*sibling),
                         prev_sibling_id = %node_id_short(prev_sibling),
                         prev_kind = ?prev_kind,
@@ -1343,7 +1357,7 @@ impl<'a> TreeSink for ArenaSink<'a> {
 
                     if let NodeKind::Text(existing) = &mut arena[prev_sibling].get_mut().kind {
                         let existing_preview = existing.as_ref();
-                        tracing::trace!(
+                        trace!(
                             sibling_id = %node_id_short(*sibling),
                             prev_sibling_id = %node_id_short(prev_sibling),
                             text_len,
@@ -1358,8 +1372,8 @@ impl<'a> TreeSink for ArenaSink<'a> {
                                 (prev_sibling, "\x1b[35m", "MERGED"),
                                 (*sibling, "\x1b[33m", "SIBLING"),
                             ];
-                            let tree_dump = dump_arena_subtree(&*arena, parent, &highlights);
-                            tracing::trace!(
+                            let tree_dump = dump_arena_subtree(&arena, parent, &highlights);
+                            trace!(
                                 sibling_id = %node_id_short(*sibling),
                                 parent_id = %node_id_short(parent),
                                 merged_into_id = %node_id_short(prev_sibling),
@@ -1376,7 +1390,7 @@ impl<'a> TreeSink for ArenaSink<'a> {
                     kind: NodeKind::Text(stem),
                     ns: Namespace::Html,
                 });
-                tracing::trace!(
+                trace!(
                     sibling_id = %node_id_short(*sibling),
                     text_node_id = %node_id_short(text_node),
                     text_len,
@@ -1390,8 +1404,8 @@ impl<'a> TreeSink for ArenaSink<'a> {
                         (*sibling, "\x1b[33m", "SIBLING"),
                         (text_node, "\x1b[36m", "INSERTED"),
                     ];
-                    let tree_dump = dump_arena_subtree(&*arena, parent, &highlights);
-                    tracing::trace!(
+                    let tree_dump = dump_arena_subtree(&arena, parent, &highlights);
+                    trace!(
                         sibling_id = %node_id_short(*sibling),
                         parent_id = %node_id_short(parent),
                         inserted_id = %node_id_short(text_node),
