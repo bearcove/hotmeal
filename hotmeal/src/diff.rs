@@ -1333,6 +1333,11 @@ impl<'a> ShadowTree<'a> {
     /// Replace a node with a placeholder, returning the placeholder's NodeId.
     /// The node's children are reparented under the placeholder.
     fn replace_with_placeholder(&mut self, node: NodeId) -> NodeId {
+        debug!(
+            ?node,
+            node_kind = %self.arena[node].get().kind,
+            "replace_with_placeholder: replacing node"
+        );
         let placeholder = self.arena.new_node(NodeData {
             hash: NodeHash(0),
             kind: HtmlNodeKind::Text,
@@ -1343,12 +1348,17 @@ impl<'a> ShadowTree<'a> {
         node.insert_before(placeholder, &mut self.arena);
         // Move all children from node to placeholder
         let children: Vec<_> = node.children(&self.arena).collect();
+        debug!(
+            children_count = children.len(),
+            "replace_with_placeholder: moving children to placeholder"
+        );
         for child in children {
             child.detach(&mut self.arena);
             placeholder.append(child, &mut self.arena);
         }
         // Now detach the empty node
         node.detach(&mut self.arena);
+        debug!(?placeholder, "replace_with_placeholder: done");
         placeholder
     }
 
@@ -1432,7 +1442,14 @@ impl<'a> ShadowTree<'a> {
         // Example: moving A under C when the tree is A -> B -> C
         //   1. Replace A with placeholder: (P) -> B -> C, A is detached
         //   2. Now we can safely insert A under C: (P) -> B -> C -> A
-        if self.is_ancestor(node, new_parent) {
+        let is_ancestor = self.is_ancestor(node, new_parent);
+        debug!(
+            ?node,
+            ?new_parent,
+            is_ancestor,
+            "move_to_position: checking ancestry"
+        );
+        if is_ancestor {
             self.replace_with_placeholder(node);
         } else {
             // Check if node is a direct child of a slot (i.e., a slot root).
@@ -1710,7 +1727,73 @@ fn convert_ops_with_shadow<'a, T: DiffTree<Types = HtmlTreeTypes<'a>>>(
                     "Move: starting"
                 );
 
-                // Get source reference
+                // CRITICAL: If node_a is an ancestor of shadow_new_parent, we need special handling.
+                // In the DOM, moving a node moves its entire subtree. So we can't directly move
+                // an ancestor under its descendant - we'd be moving the descendant too!
+                //
+                // Solution: First move all children of node_a to node_a's parent position,
+                // then move the (now childless) node_a under the descendant.
+                let is_ancestor = shadow.is_ancestor(node_a, shadow_new_parent);
+                if is_ancestor {
+                    debug!(
+                        ?node_a,
+                        ?shadow_new_parent,
+                        "Move: ancestor case - reparenting children first"
+                    );
+
+                    // Get the parent of node_a and the position of node_a within that parent
+                    let node_a_parent = shadow
+                        .arena
+                        .get(node_a)
+                        .and_then(|n| n.parent())
+                        .expect("node_a should have a parent");
+                    let node_a_position = node_a_parent
+                        .children(&shadow.arena)
+                        .position(|c| c == node_a)
+                        .unwrap_or(0);
+
+                    // Collect children of node_a (they need to be moved to node_a's position)
+                    let children: Vec<_> = node_a.children(&shadow.arena).collect();
+
+                    // Move each child to node_a's parent, right after node_a's position
+                    // We process in reverse order so positions stay stable
+                    for (i, child) in children.iter().enumerate().rev() {
+                        let child_from = shadow.get_node_ref(*child);
+                        let child_position = node_a_position + 1 + i;
+
+                        // Move child in shadow tree (simple detach since we're moving to sibling position)
+                        shadow.detach_with_placeholder(*child);
+
+                        // Insert after node_a
+                        let siblings: Vec<_> = node_a_parent.children(&shadow.arena).collect();
+                        if child_position < siblings.len() {
+                            siblings[child_position].insert_before(*child, &mut shadow.arena);
+                        } else {
+                            node_a_parent.append(*child, &mut shadow.arena);
+                        }
+
+                        let child_to =
+                            shadow.get_node_ref_with_position(node_a_parent, child_position);
+
+                        debug!(
+                            ?child,
+                            ?child_from,
+                            ?child_to,
+                            "Move: reparenting child of ancestor"
+                        );
+
+                        result.push(Patch::Move {
+                            from: child_from,
+                            to: child_to,
+                            detach_to_slot: None,
+                        });
+                    }
+
+                    #[cfg(test)]
+                    shadow.debug_print_tree("After reparenting children");
+                }
+
+                // Get source reference (after any child reparenting)
                 debug!(?node_a, "Move: computing from reference for node");
                 let from = shadow.get_node_ref(node_a);
                 debug!(?node_a, ?from, "Move: computed from reference");
