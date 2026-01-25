@@ -105,9 +105,16 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
     let chrome_path = get_or_fetch_chrome().await;
 
     let headed = std::env::var("BROWSER_HEAD").is_ok();
+    let no_sandbox = std::env::var("THRALL_NO_SANDBOX").is_ok() || is_running_in_ci();
+
     let mut config = BrowserConfig::builder()
         .arg("--allow-file-access-from-files")
         .arg("--disable-web-security");
+    if no_sandbox {
+        // Required when running as root in CI containers
+        config = config.arg("--no-sandbox");
+        eprintln!("[thrall] Running with --no-sandbox (CI mode)");
+    }
     if let Some(path) = chrome_path {
         config = config.chrome_executable(path);
     }
@@ -217,6 +224,19 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
     }
 
     listener_handle.abort();
+}
+
+/// Detect if we're running in a CI environment.
+fn is_running_in_ci() -> bool {
+    // GitHub Actions
+    std::env::var("CI").is_ok() ||
+    std::env::var("GITHUB_ACTIONS").is_ok() ||
+    // GitLab CI
+    std::env::var("GITLAB_CI").is_ok() ||
+    // Other common CI systems
+    std::env::var("JENKINS_URL").is_ok() ||
+    std::env::var("CIRCLECI").is_ok() ||
+    std::env::var("TRAVIS").is_ok()
 }
 
 /// Get Chrome executable path, downloading if necessary.
