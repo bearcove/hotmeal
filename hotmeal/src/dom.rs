@@ -1092,6 +1092,7 @@ fn dump_arena_subtree<'a>(
     out
 }
 
+#[allow(dead_code)]
 struct LazyTreeDump<'a> {
     arena: &'a Arena<NodeData<'a>>,
     node_id: NodeId,
