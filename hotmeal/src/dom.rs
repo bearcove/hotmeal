@@ -405,6 +405,23 @@ impl<'a> Document<'a> {
         Ok(())
     }
 
+    /// Initialize slot map for patch application.
+    pub fn init_patch_slots(&mut self) -> HashMap<u32, NodeId> {
+        let mut slots: HashMap<u32, NodeId> = HashMap::new();
+        let body_id = self.body().unwrap_or_else(|| self.ensure_body());
+        slots.insert(0, body_id);
+        slots
+    }
+
+    /// Apply a single patch using a caller-provided slot map.
+    pub fn apply_patch_with_slots(
+        &mut self,
+        patch: Patch<'a>,
+        slots: &mut HashMap<u32, NodeId>,
+    ) -> Result<(), DiffError> {
+        self.apply_patch(patch, slots)
+    }
+
     #[allow(clippy::too_many_lines)]
     fn apply_patch(
         &mut self,

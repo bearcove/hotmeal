@@ -114,17 +114,3 @@ pub struct PatchStep {
     /// Full DOM tree after applying this patch.
     pub dom_tree: DomNode,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use facet_testhelpers::test;
-    use hotmeal::{debug, trace};
-
-    #[test]
-    fn print_method_id() {
-        let id = browser_fuzzer_method_id::test_patch();
-        trace!(id = %id, "test_patch method ID");
-        let _ = id;
-    }
-}
