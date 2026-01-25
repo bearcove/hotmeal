@@ -1,6 +1,9 @@
 mod browser_worker;
 pub use browser_worker::*;
 
+mod dom_generator;
+pub use dom_generator::*;
+
 mod dom_node;
 pub use dom_node::*;
 
