@@ -442,12 +442,12 @@ where
                     self.unexpected(&tag);
                     let body_elem = self.body_elem().as_deref().cloned();
                     match body_elem {
-                        Some(ref node)
+                        Some(_)
                             if self.open_elems.borrow().len() != 1
                                 && !self.in_html_elem_named(local_name!("template")) =>
                         {
                             self.frameset_ok.set(false);
-                            self.sink.add_attrs_if_missing(node, tag.attrs)
+                            // Intentionally do not merge attributes from stray <body> tags.
                         }
                         _ => {}
                     }
