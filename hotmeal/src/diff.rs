@@ -1122,6 +1122,40 @@ impl<'a> ShadowTree<'a> {
         node.detach(&mut self.arena);
     }
 
+    /// Check if `ancestor` is an ancestor of `node`.
+    fn is_ancestor(&self, ancestor: NodeId, node: NodeId) -> bool {
+        let mut current = node;
+        while let Some(parent) = self.arena.get(current).and_then(|n| n.parent()) {
+            if parent == ancestor {
+                return true;
+            }
+            current = parent;
+        }
+        false
+    }
+
+    /// Replace a node with a placeholder, returning the placeholder's NodeId.
+    /// The node's children are reparented under the placeholder.
+    fn replace_with_placeholder(&mut self, node: NodeId) -> NodeId {
+        let placeholder = self.arena.new_node(NodeData {
+            hash: NodeHash(0),
+            kind: HtmlNodeKind::Text,
+            properties: HtmlProps::default(),
+            text: None,
+        });
+        // Insert placeholder as sibling of node
+        node.insert_before(placeholder, &mut self.arena);
+        // Move all children from node to placeholder
+        let children: Vec<_> = node.children(&self.arena).collect();
+        for child in children {
+            child.detach(&mut self.arena);
+            placeholder.append(child, &mut self.arena);
+        }
+        // Now detach the empty node
+        node.detach(&mut self.arena);
+        placeholder
+    }
+
     /// Pretty-print the shadow tree for debugging.
     #[allow(dead_code)]
     fn debug_print_tree(&self, _title: &str) {
@@ -1205,18 +1239,30 @@ impl<'a> ShadowTree<'a> {
         new_parent: NodeId,
         position: usize,
     ) -> Option<u32> {
-        // Check if node is a direct child of a slot (i.e., a slot root).
-        // In that case, we just detach it without a placeholder.
-        let parent = self.arena.get(node).and_then(|n| n.parent());
-        let is_slot_root = parent
-            .is_some_and(|p| self.arena.get(p).and_then(|n| n.parent()) == Some(self.super_root));
-
-        if !is_slot_root {
-            // Node is deeper in the tree - detach with placeholder to prevent shifts
-            self.detach_with_placeholder(node);
+        // CRITICAL: If node is an ancestor of new_parent, we must replace node with
+        // a placeholder FIRST. Otherwise, insert_before would create a cycle in the
+        // tree (indextree's insert_before doesn't check for cycles like append does).
+        //
+        // Example: moving A under C when the tree is A -> B -> C
+        //   1. Replace A with placeholder: (P) -> B -> C, A is detached
+        //   2. Now we can safely insert A under C: (P) -> B -> C -> A
+        if self.is_ancestor(node, new_parent) {
+            self.replace_with_placeholder(node);
         } else {
-            // Node is a slot root - just detach it
-            node.detach(&mut self.arena);
+            // Check if node is a direct child of a slot (i.e., a slot root).
+            // In that case, we just detach it without a placeholder.
+            let parent = self.arena.get(node).and_then(|n| n.parent());
+            let is_slot_root = parent.is_some_and(|p| {
+                self.arena.get(p).and_then(|n| n.parent()) == Some(self.super_root)
+            });
+
+            if !is_slot_root {
+                // Node is deeper in the tree - detach with placeholder to prevent shifts
+                self.detach_with_placeholder(node);
+            } else {
+                // Node is a slot root - just detach it
+                node.detach(&mut self.arena);
+            }
         }
 
         // Now insert at target position
@@ -2534,6 +2580,68 @@ mod tests {
              <section><strong>break</strong></section>\
              <strong><svg width=\"29\"><circle></circle></svg></strong> end.<p></p></body></html>",
             "Output should match html5ever behavior"
+        );
+    }
+
+    /// Regression test for OOM caused by cycle in parent chain.
+    /// When moving a node under its own descendant, we must not create a cycle.
+    #[test]
+    fn test_move_parent_under_child_no_cycle() {
+        // Build a tree: A -> B -> C (A is grandparent of C)
+        // Then try to move A to position 0 under B, displacing C.
+        // This triggers insert_before which doesn't check for cycles.
+        let mut arena: indextree::Arena<NodeData<HtmlTreeTypes>> = indextree::Arena::new();
+
+        // Create nodes: body -> div_a -> div_b -> div_c
+        let body = arena.new_node(NodeData {
+            hash: NodeHash(0),
+            kind: HtmlNodeKind::Element(LocalName::from("body"), Namespace::Html),
+            properties: HtmlProps::default(),
+            text: None,
+        });
+        let div_a = arena.new_node(NodeData {
+            hash: NodeHash(0),
+            kind: HtmlNodeKind::Element(LocalName::from("div"), Namespace::Html),
+            properties: HtmlProps::default(),
+            text: None,
+        });
+        let div_b = arena.new_node(NodeData {
+            hash: NodeHash(0),
+            kind: HtmlNodeKind::Element(LocalName::from("div"), Namespace::Html),
+            properties: HtmlProps::default(),
+            text: None,
+        });
+        let div_c = arena.new_node(NodeData {
+            hash: NodeHash(0),
+            kind: HtmlNodeKind::Element(LocalName::from("div"), Namespace::Html),
+            properties: HtmlProps::default(),
+            text: None,
+        });
+
+        body.append(div_a, &mut arena);
+        div_a.append(div_b, &mut arena);
+        div_b.append(div_c, &mut arena);
+
+        // Structure: body -> div_a -> div_b -> div_c
+        let mut shadow = ShadowTree::new(arena, body);
+
+        shadow.debug_print_tree("Initial");
+
+        // Now try to move div_a to position 0 under div_b (moving parent under child)
+        // div_c is at position 0, so this triggers insert_before
+        // This should NOT create a cycle
+        shadow.move_to_position(div_a, div_b, 0);
+
+        shadow.debug_print_tree("After move");
+
+        // Verify no cycle by computing path - this would hang/OOM if there's a cycle
+        let path = shadow.compute_path(div_a);
+        debug!(?path, "Path to div_a after move");
+
+        // div_a should now be a child of div_b
+        assert!(
+            div_b.children(&shadow.arena).any(|c| c == div_a),
+            "div_a should be a child of div_b after move"
         );
     }
 }
