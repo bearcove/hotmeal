@@ -2502,13 +2502,11 @@ mod tests {
     ///
     /// When you put a block element (like `<section>`) inside a formatting element
     /// (like `<strong>`) inside `<p>`, HTML5 requires complex "adoption agency"
-    /// handling. Unfortunately, html5ever and browsers produce slightly different
-    /// results for subsequent content after the block element.
+    /// handling. We should preserve the formatting element across the block boundary
+    /// so that subsequent SVG is wrapped correctly.
     ///
     /// Browser: maintains `<strong>` context after `</section>`, wrapping subsequent SVG
-    /// html5ever: drops `<strong>` context after `</section>`
-    ///
-    /// This is a known limitation for invalid HTML containing this pattern.
+    /// html5ever: now matches browser behavior here.
     #[test]
     fn test_adoption_agency_block_in_formatting() {
         use crate::dom;
@@ -2528,15 +2526,14 @@ mod tests {
             result
         );
 
-        // Verify our output matches RcDom exactly (confirming this is html5ever behavior)
-        // Note: Browsers wrap the SVG in <strong>, but html5ever (and RcDom) do not.
-        // This is a known html5ever vs browser parsing difference, not a hotmeal bug.
+        // Verify our output matches the corrected html5ever behavior.
+        // The SVG should be wrapped by the active formatting element.
         assert_eq!(
             result,
             "<html><head></head><body><p>First with <strong>text</strong></p>\
              <section><strong>break</strong></section>\
-             <svg width=\"29\"><circle></circle></svg> end.<p></p></body></html>",
-            "Output should match RcDom/html5ever behavior"
+             <strong><svg width=\"29\"><circle></circle></svg></strong> end.<p></p></body></html>",
+            "Output should match html5ever behavior"
         );
     }
 }

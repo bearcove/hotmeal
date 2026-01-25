@@ -1261,12 +1261,6 @@ impl<'a> TreeSink for ArenaSink<'a> {
                     (*parent, "\x1b[32m", "PARENT"),
                     (node, "\x1b[36m", "INSERTED"),
                 ];
-                trace!(
-                    parent_id = %node_id_short(*parent),
-                    node_id = %node_id_short(node),
-                    tree = %LazyTreeDump::new(&arena, *parent, &highlights),
-                    "append: before insert"
-                );
                 if let Some(grandparent) = arena[*parent].parent() {
                     let gp_highlights = [
                         (grandparent, "\x1b[35m", "GRANDPARENT"),
@@ -1280,14 +1274,15 @@ impl<'a> TreeSink for ArenaSink<'a> {
                         tree = %LazyTreeDump::new(&arena, grandparent, &gp_highlights),
                         "append: before insert (grandparent)"
                     );
+                } else {
+                    trace!(
+                        parent_id = %node_id_short(*parent),
+                        node_id = %node_id_short(node),
+                        tree = %LazyTreeDump::new(&arena, *parent, &highlights),
+                        "append: before insert"
+                    );
                 }
                 parent.append(node, &mut *arena);
-                trace!(
-                    parent_id = %node_id_short(*parent),
-                    node_id = %node_id_short(node),
-                    tree = %LazyTreeDump::new(&arena, *parent, &highlights),
-                    "append: after insert"
-                );
                 if let Some(grandparent) = arena[*parent].parent() {
                     let gp_highlights = [
                         (grandparent, "\x1b[35m", "GRANDPARENT"),
@@ -1300,6 +1295,13 @@ impl<'a> TreeSink for ArenaSink<'a> {
                         grandparent_id = %node_id_short(grandparent),
                         tree = %LazyTreeDump::new(&arena, grandparent, &gp_highlights),
                         "append: after insert (grandparent)"
+                    );
+                } else {
+                    trace!(
+                        parent_id = %node_id_short(*parent),
+                        node_id = %node_id_short(node),
+                        tree = %LazyTreeDump::new(&arena, *parent, &highlights),
+                        "append: after insert"
                     );
                 }
             }
@@ -1363,33 +1365,63 @@ impl<'a> TreeSink for ArenaSink<'a> {
                     "append_before_sibling: node"
                 );
                 if let Some(parent) = parent {
-                    let highlights = [
-                        (parent, "\x1b[32m", "PARENT"),
-                        (*sibling, "\x1b[33m", "SIBLING"),
-                    ];
-                    let tree_dump = dump_arena_subtree(&arena, parent, &highlights);
-                    trace!(
-                        sibling_id = %node_id_short(*sibling),
-                        parent_id = %node_id_short(parent),
-                        tree = %tree_dump,
-                        "append_before_sibling: before insert"
-                    );
+                    if let Some(grandparent) = arena[parent].parent() {
+                        let gp_highlights = [
+                            (grandparent, "\x1b[35m", "GRANDPARENT"),
+                            (parent, "\x1b[32m", "PARENT"),
+                            (*sibling, "\x1b[33m", "SIBLING"),
+                        ];
+                        trace!(
+                            sibling_id = %node_id_short(*sibling),
+                            parent_id = %node_id_short(parent),
+                            grandparent_id = %node_id_short(grandparent),
+                            tree = %LazyTreeDump::new(&arena, grandparent, &gp_highlights),
+                            "append_before_sibling: before insert (grandparent)"
+                        );
+                    } else {
+                        let highlights = [
+                            (parent, "\x1b[32m", "PARENT"),
+                            (*sibling, "\x1b[33m", "SIBLING"),
+                        ];
+                        trace!(
+                            sibling_id = %node_id_short(*sibling),
+                            parent_id = %node_id_short(parent),
+                            tree = %LazyTreeDump::new(&arena, parent, &highlights),
+                            "append_before_sibling: before insert"
+                        );
+                    }
                 }
                 sibling.insert_before(node, &mut *arena);
                 if let Some(parent) = parent {
-                    let highlights = [
-                        (parent, "\x1b[32m", "PARENT"),
-                        (*sibling, "\x1b[33m", "SIBLING"),
-                        (node, "\x1b[36m", "INSERTED"),
-                    ];
-                    let tree_dump = dump_arena_subtree(&arena, parent, &highlights);
-                    trace!(
-                        sibling_id = %node_id_short(*sibling),
-                        parent_id = %node_id_short(parent),
-                        inserted_id = %node_id_short(node),
-                        tree = %tree_dump,
-                        "append_before_sibling: after insert"
-                    );
+                    if let Some(grandparent) = arena[parent].parent() {
+                        let gp_highlights = [
+                            (grandparent, "\x1b[35m", "GRANDPARENT"),
+                            (parent, "\x1b[32m", "PARENT"),
+                            (*sibling, "\x1b[33m", "SIBLING"),
+                            (node, "\x1b[36m", "INSERTED"),
+                        ];
+                        trace!(
+                            sibling_id = %node_id_short(*sibling),
+                            parent_id = %node_id_short(parent),
+                            inserted_id = %node_id_short(node),
+                            grandparent_id = %node_id_short(grandparent),
+                            tree = %LazyTreeDump::new(&arena, grandparent, &gp_highlights),
+                            "append_before_sibling: after insert (grandparent)"
+                        );
+                    } else {
+                        let highlights = [
+                            (parent, "\x1b[32m", "PARENT"),
+                            (*sibling, "\x1b[33m", "SIBLING"),
+                            (node, "\x1b[36m", "INSERTED"),
+                        ];
+                        trace!(
+                            sibling_id = %node_id_short(*sibling),
+                            parent_id = %node_id_short(parent),
+                            inserted_id = %node_id_short(node),
+                            tree = %LazyTreeDump::new(&arena, parent, &highlights),
+                            "append_before_sibling: after insert"
+                        );
+                    }
                 }
             }
             NodeOrText::AppendText(text) => {
