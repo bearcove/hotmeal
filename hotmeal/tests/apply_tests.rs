@@ -1,9 +1,11 @@
 //! Tests for patch application.
 
 use facet_testhelpers::test;
+#[allow(unused_imports)]
+use hotmeal::{debug, trace};
+
 use hotmeal::{
-    AttrPair, InsertContent, NodeKind, NodePath, NodeRef, Patch, Stem, StrTendril, debug, parse,
-    trace,
+    AttrPair, InsertContent, NodeKind, NodePath, NodeRef, Patch, Stem, StrTendril, parse,
 };
 use html5ever::{LocalName, QualName, local_name, ns};
 use smallvec::smallvec;

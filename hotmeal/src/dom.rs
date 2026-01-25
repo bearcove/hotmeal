@@ -1594,7 +1594,6 @@ impl<'a> TreeSink for ArenaSink<'a> {
 mod tests {
     use super::*;
     use facet_testhelpers::test;
-    use hotmeal::{debug, trace};
 
     /// Helper to create a StrTendril from a string
     fn t(s: &str) -> StrTendril {
@@ -2002,6 +2001,31 @@ mod tests {
         match &doc.get(children[1]).kind {
             NodeKind::Element(elem) => assert_eq!(elem.tag.as_ref(), "table"),
             other => panic!("Expected table element, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parser_mismatch_body_attrs_from_stray_body_tags() {
+        // Regression test for stray <body> tokens turning into attributes on <body>
+        // Input observed from browser fuzzer:
+        // "t-Eh<body>g>selectedt-Eh<body hrselectedt"
+        let html =
+            t("<!DOCTYPE html><html><body>t-Eh<body>g>selectedt-Eh<body hrselectedt</body></html>");
+        trace!(%html, "Input");
+        let doc = parse(&html);
+
+        let body = doc.body().expect("should have body");
+        let body_data = doc.get(body);
+        match &body_data.kind {
+            NodeKind::Element(elem) => {
+                trace!(attrs = ?elem.attrs, "Body attrs");
+                assert!(
+                    elem.attrs.is_empty(),
+                    "Body should not receive attributes from stray <body> tokens: {:?}",
+                    elem.attrs
+                );
+            }
+            other => panic!("Expected body element, got {:?}", other),
         }
     }
 

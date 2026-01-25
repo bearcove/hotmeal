@@ -1707,7 +1707,6 @@ mod tests {
     use super::*;
     use crate::dom;
     use facet_testhelpers::test;
-    use hotmeal::{debug, trace};
 
     /// Helper to create a StrTendril from a string
     fn t(s: &str) -> StrTendril {

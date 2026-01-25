@@ -136,6 +136,16 @@ Error: Fuzz target exited with exit status: 77
 
 ## 2) Turning fuzz output into a repro test
 
+### Repro-first workflow (mandatory)
+
+For parser mismatches or fuzz regressions, always follow this order:
+
+1. Add a focused unit test (use `trace!` where it helps explain tree state).
+2. Run it via nextest with tracing enabled and confirm it fails.
+3. Only then start hunting for root cause.
+
+### Steps to build the repro test
+
 1. **Extract the HTML from the fuzzer output:**
    - The fuzzer prints `Old:` and `New:` HTML strings
    - Or look at the `Debug` output showing the `FuzzInput` structure
@@ -169,7 +179,7 @@ fn test_fuzzer_<description>() {
 }
 ```
 
-3. **Run the test with nextest and tracing enabled:**
+3. **Run the test with nextest and tracing enabled (confirm it fails):**
 
 ```bash
 FACET_LOG=trace cargo nextest run --no-capture test_fuzzer_<description> -F tracing
