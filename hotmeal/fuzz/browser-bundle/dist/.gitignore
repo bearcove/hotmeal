@@ -1,0 +1,8 @@
+# Ignore wasm-pack generated files (rebuilt on demand)
+*.js
+*.wasm
+*.d.ts
+package.json
+
+# But track index.html (our custom loader)
+!index.html
