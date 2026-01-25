@@ -39,6 +39,9 @@ pub struct Document<'a> {
     /// Root node (usually `<html>` element)
     pub root: NodeId,
 
+    /// Errors encountered while parsing
+    pub errors: Vec<Cow<'static, str>>,
+
     /// DOCTYPE if present (usually "html")
     pub doctype: Option<Stem<'a>>,
 }
@@ -80,6 +83,7 @@ impl<'a> Document<'a> {
         Document {
             arena,
             root: html,
+            errors: Default::default(),
             doctype: None,
         }
     }
@@ -987,6 +991,9 @@ struct ArenaSink<'a> {
     /// Document node (parent of `<html>`)
     document: NodeId,
 
+    /// Parse errors
+    errors: RefCell<Vec<Cow<'static, str>>>,
+
     /// DOCTYPE encountered during parse
     doctype: RefCell<Option<Stem<'a>>>,
 }
@@ -1152,6 +1159,7 @@ impl<'a> ArenaSink<'a> {
             arena: RefCell::new(arena),
             document,
             doctype: RefCell::new(None),
+            errors: Default::default(),
         }
     }
 
@@ -1183,11 +1191,12 @@ impl<'a> TreeSink for ArenaSink<'a> {
             arena,
             root,
             doctype: self.doctype.into_inner(),
+            errors: self.errors.into_inner(),
         }
     }
 
-    fn parse_error(&self, _msg: Cow<'static, str>) {
-        // Ignore parse errors (html5ever recovers automatically)
+    fn parse_error(&self, msg: Cow<'static, str>) {
+        self.errors.borrow_mut().push(msg);
     }
 
     fn get_document(&self) -> Self::Handle {

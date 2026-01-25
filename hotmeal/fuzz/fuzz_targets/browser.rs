@@ -6,8 +6,7 @@
 //! to the browser to apply. This tests that patches computed by hotmeal
 //! can be correctly applied by hotmeal-wasm in the browser DOM.
 
-use browser_proto::{DomAttr, DomNode};
-use hotmeal::{Document, StrTendril};
+use hotmeal::StrTendril;
 use libfuzzer_sys::fuzz_target;
 use similar::{ChangeTag, TextDiff};
 
@@ -31,7 +30,17 @@ fn target(data: &[u8]) {
 
     // Parse old HTML with html5ever and get DOM tree
     let old_doc = hotmeal::parse(&full_a);
-    let html5ever_tree = document_body_to_dom_node(&old_doc);
+    let html5ever_tree = common::document_body_to_dom_node(&old_doc);
+
+    // Send to browser worker
+    let Some(result) = common::test_roundtrip(full_a.to_string(), full_b.to_string()) else {
+        return;
+    };
+
+    // Skip cases where browser parsed to empty
+    if result.normalized_old.trim().is_empty() {
+        return;
+    }
 
     // Apply patches natively with hotmeal and collect traces
     let mut native_trace = Vec::with_capacity(patches.len());
@@ -47,37 +56,17 @@ fn target(data: &[u8]) {
         native_trace.push(html_after);
     }
 
-    // Send to browser worker
-    let (response_tx, response_rx) = oneshot::channel();
-    get_channel()
-        .send(FuzzRequest {
-            old_html: full_a.clone(),
-            new_html: full_b.clone(),
-            response_tx,
-        })
-        .unwrap();
-
-    // Wait for result
-    let Some(result) = response_rx.blocking_recv().unwrap() else {
-        return;
-    };
-
-    // Skip cases where browser parsed to empty
-    if result.normalized_old.trim().is_empty() {
-        return;
-    }
-
     // Compare html5ever tree with browser tree - detect parser mismatches
     if html5ever_tree != result.initial_dom_tree {
         eprintln!("\n========== PARSER MISMATCH ==========");
-        eprintln!("Input: {:?}", html_a);
+        eprintln!("Input: {:?}", full_a);
         eprintln!("\n--- html5ever tree ---");
-        eprintln!("{}", pretty_print_dom(&html5ever_tree, 0));
+        eprintln!("{}", common::pretty_print_dom(&html5ever_tree, 0));
         eprintln!("--- browser tree ---");
-        eprintln!("{}", pretty_print_dom(&result.initial_dom_tree, 0));
+        eprintln!("{}", common::pretty_print_dom(&result.initial_dom_tree, 0));
         eprintln!("\n--- diff ---");
-        let h5e_str = pretty_print_dom(&html5ever_tree, 0);
-        let browser_str = pretty_print_dom(&result.initial_dom_tree, 0);
+        let h5e_str = common::pretty_print_dom(&html5ever_tree, 0);
+        let browser_str = common::pretty_print_dom(&result.initial_dom_tree, 0);
         print_diff(&h5e_str, &browser_str);
         eprintln!("=====================================\n");
         panic!("Parser mismatch detected! Fix html5ever to match browser.");
@@ -115,8 +104,8 @@ fn target(data: &[u8]) {
     // Final comparison: result HTML should match normalized new HTML
     if result.result_html != result.normalized_new {
         eprintln!("\n========== FINAL RESULT MISMATCH ==========");
-        eprintln!("Input A: {:?}", html_a);
-        eprintln!("Input B: {:?}", html_b);
+        eprintln!("Input A: {:?}", full_a);
+        eprintln!("Input B: {:?}", full_b);
         eprintln!("\n--- Expected (normalized B) ---");
         eprintln!("{}", result.normalized_new);
         eprintln!("\n--- Actual (patched result) ---");

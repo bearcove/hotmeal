@@ -2,7 +2,7 @@ use browser_proto::{DomAttr, DomNode};
 use hotmeal::Document;
 
 /// Convert hotmeal's Document body to DomNode tree for comparison with browser.
-fn document_body_to_dom_node(doc: &Document) -> DomNode {
+pub fn document_body_to_dom_node(doc: &Document) -> DomNode {
     let body = doc.body().expect("document has no body");
     node_to_dom_node(doc, body)
 }
@@ -38,7 +38,7 @@ fn node_to_dom_node(doc: &Document, node_id: hotmeal::NodeId) -> DomNode {
 }
 
 /// Pretty-print a DomNode tree for diffing.
-fn pretty_print_dom(node: &DomNode, indent: usize) -> String {
+pub fn pretty_print_dom(node: &DomNode, indent: usize) -> String {
     let mut out = String::new();
     let prefix = "  ".repeat(indent);
     match node {

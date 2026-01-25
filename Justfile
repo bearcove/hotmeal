@@ -21,8 +21,7 @@ fuzz-mutate-cov *ARGS:
     cd hotmeal/fuzz && cargo fuzz coverage mutate -- -dict=html.dict {{ ARGS }}
 
 fuzz-prep:
-    cd hotmeal/fuzz/browser-wasm
-    wasm-pack build --target web --out-dir ../browser-bundle/dist
+    cd hotmeal/fuzz/browser-wasm && wasm-pack build --target web --out-dir ../browser-bundle/dist
 
 # List all fuzz targets
 list:
