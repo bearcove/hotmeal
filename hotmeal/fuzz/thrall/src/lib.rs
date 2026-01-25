@@ -3,6 +3,7 @@
 //! Named after the supernatural servants of demons and vampires,
 //! this crate lets you control a Chrome browser for testing purposes.
 
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use browser_proto::BrowserClient;
@@ -11,6 +12,7 @@ use chromiumoxide::{
     Browser, BrowserConfig,
     cdp::browser_protocol::network::EnableParams,
     cdp::js_protocol::runtime::{EnableParams as RuntimeEnableParams, EventConsoleApiCalled},
+    fetcher::{BrowserFetcher, BrowserFetcherOptions},
 };
 use futures_util::StreamExt;
 use roam_stream::{ConnectionHandle, HandshakeConfig, NoDispatcher};
@@ -99,10 +101,16 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
     let port = listener.local_addr().unwrap().port();
     eprintln!("[thrall] WebSocket server listening on port {}", port);
 
+    // Get Chrome executable - either from system or download it
+    let chrome_path = get_or_fetch_chrome().await;
+
     let headed = std::env::var("BROWSER_HEAD").is_ok();
     let mut config = BrowserConfig::builder()
         .arg("--allow-file-access-from-files")
         .arg("--disable-web-security");
+    if let Some(path) = chrome_path {
+        config = config.chrome_executable(path);
+    }
     if headed {
         config = config.with_head().arg("--auto-open-devtools-for-tabs");
     }
@@ -209,6 +217,109 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
     }
 
     listener_handle.abort();
+}
+
+/// Get Chrome executable path, downloading if necessary.
+///
+/// Returns `None` if Chrome is available on the system PATH (chromiumoxide will find it).
+/// Returns `Some(path)` if we downloaded Chrome ourselves.
+async fn get_or_fetch_chrome() -> Option<PathBuf> {
+    // First, check if Chrome is available on the system
+    // chromiumoxide checks common locations, so we only need to download
+    // if it fails to launch
+
+    // Try to use CHROME_PATH env var if set
+    if let Ok(chrome_path) = std::env::var("CHROME_PATH") {
+        let path = PathBuf::from(chrome_path);
+        if path.exists() {
+            eprintln!("[thrall] Using Chrome from CHROME_PATH: {}", path.display());
+            return Some(path);
+        }
+    }
+
+    // Check if we should skip auto-download (e.g., if Chrome is installed)
+    if std::env::var("THRALL_NO_DOWNLOAD").is_ok() {
+        eprintln!("[thrall] THRALL_NO_DOWNLOAD set, using system Chrome");
+        return None;
+    }
+
+    // Download Chrome to a cache directory
+    let cache_dir = dirs_next::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("thrall")
+        .join("chrome");
+
+    // Check if we already have a downloaded Chrome
+    let marker_file = cache_dir.join(".fetched");
+    if marker_file.exists() {
+        // Find the executable in the cache
+        if let Some(exe) = find_chrome_executable(&cache_dir) {
+            eprintln!("[thrall] Using cached Chrome: {}", exe.display());
+            return Some(exe);
+        }
+    }
+
+    eprintln!("[thrall] Downloading Chrome to {}...", cache_dir.display());
+
+    tokio::fs::create_dir_all(&cache_dir).await.ok()?;
+
+    let fetcher = BrowserFetcher::new(
+        BrowserFetcherOptions::builder()
+            .with_path(&cache_dir)
+            .build()
+            .ok()?,
+    );
+
+    match fetcher.fetch().await {
+        Ok(info) => {
+            // Create marker file
+            tokio::fs::write(&marker_file, "").await.ok();
+            eprintln!(
+                "[thrall] Chrome downloaded: {}",
+                info.executable_path.display()
+            );
+            Some(info.executable_path)
+        }
+        Err(e) => {
+            eprintln!("[thrall] Failed to download Chrome: {:?}", e);
+            eprintln!("[thrall] Will try system Chrome instead");
+            None
+        }
+    }
+}
+
+/// Find Chrome executable in a directory (platform-specific).
+fn find_chrome_executable(dir: &std::path::Path) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let app = dir
+            .join("chrome-mac")
+            .join("Chromium.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("Chromium");
+        if app.exists() {
+            return Some(app);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let exe = dir.join("chrome-linux").join("chrome");
+        if exe.exists() {
+            return Some(exe);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let exe = dir.join("chrome-win").join("chrome.exe");
+        if exe.exists() {
+            return Some(exe);
+        }
+    }
+
+    None
 }
 
 /// Find the browser bundle directory.
