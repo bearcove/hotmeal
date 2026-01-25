@@ -1100,6 +1100,7 @@ struct LazyTreeDump<'a> {
 }
 
 impl<'a> LazyTreeDump<'a> {
+    #[allow(dead_code)]
     fn new(
         arena: &'a Arena<NodeData<'a>>,
         node_id: NodeId,
