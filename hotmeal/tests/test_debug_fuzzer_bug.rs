@@ -1,7 +1,9 @@
 //! Debug the specific fuzzer bug
 
 use facet_testhelpers::test;
-use hotmeal::{NodePath, NodeRef, Patch, StrTendril, debug, trace};
+use hotmeal::{NodePath, NodeRef, Patch, StrTendril};
+#[allow(unused_imports)]
+use hotmeal::{debug, trace};
 use html5ever::LocalName;
 use smallvec::smallvec;
 
