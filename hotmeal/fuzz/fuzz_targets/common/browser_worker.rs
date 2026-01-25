@@ -102,11 +102,11 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
     }
     let (mut browser, mut handler) = Browser::launch(config.build().unwrap()).await.unwrap();
 
-    if let Some(child) = browser.get_mut_child() {
-        if let Some(pid) = child.inner.id() {
-            let _ = CHROME_PID.set(pid);
-            eprintln!("[browser-fuzz] Chrome launched (pid {})", pid);
-        }
+    if let Some(child) = browser.get_mut_child()
+        && let Some(pid) = child.inner.id()
+    {
+        let _ = CHROME_PID.set(pid);
+        eprintln!("[browser-fuzz] Chrome launched (pid {})", pid);
     }
 
     tokio::spawn(async move {

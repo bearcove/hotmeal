@@ -274,7 +274,7 @@ impl ChaosNode {
                 }
 
                 if el.is_void {
-                    html.push_str(">");
+                    html.push('>');
                 } else {
                     html.push('>');
                     for child in &el.children {
@@ -2373,15 +2373,15 @@ impl ExtendedNode {
                 children,
             } => {
                 let mut attrs = String::new();
-                if let Some(c) = colspan {
-                    if *c > 1 {
-                        attrs.push_str(&format!(" colspan=\"{}\"", c));
-                    }
+                if let Some(c) = colspan
+                    && *c > 1
+                {
+                    attrs.push_str(&format!(" colspan=\"{}\"", c));
                 }
-                if let Some(r) = rowspan {
-                    if *r > 1 {
-                        attrs.push_str(&format!(" rowspan=\"{}\"", r));
-                    }
+                if let Some(r) = rowspan
+                    && *r > 1
+                {
+                    attrs.push_str(&format!(" rowspan=\"{}\"", r));
                 }
                 format!("<td{}>{}</td>", attrs, fmt_children(children, 3))
             }

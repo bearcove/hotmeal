@@ -24,9 +24,7 @@ fn split_input(data: &[u8]) -> Option<(String, String)> {
 /// Splits the input data into two sanitized HTML documents wrapped in a standard template.
 pub fn prepare_html_inputs(data: &[u8]) -> Option<(String, String)> {
     // Split at 0xFF delimiter
-    let Some((html_a, html_b)) = split_input(data) else {
-        return None;
-    };
+    let (html_a, html_b) = split_input(data)?;
 
     // Skip empty inputs
     if html_a.is_empty() || html_b.is_empty() {
