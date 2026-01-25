@@ -1,6 +1,12 @@
+//! Thrall - Control browsers from Rust tests
+//!
+//! Named after the supernatural servants of demons and vampires,
+//! this crate lets you control a Chrome browser for testing purposes.
+
 use std::sync::OnceLock;
 
-use browser_proto::{BrowserClient, DomNode, OwnedPatches, RoundtripResult, TestPatchResult};
+use browser_proto::BrowserClient;
+pub use browser_proto::{DomNode, OwnedPatches, RoundtripResult, TestPatchResult};
 use chromiumoxide::{
     Browser, BrowserConfig,
     cdp::browser_protocol::network::EnableParams,
@@ -91,7 +97,7 @@ pub fn parse_to_dom(html: String) -> Option<DomNode> {
 async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    eprintln!("[browser-fuzz] WebSocket server listening on port {}", port);
+    eprintln!("[thrall] WebSocket server listening on port {}", port);
 
     let headed = std::env::var("BROWSER_HEAD").is_ok();
     let mut config = BrowserConfig::builder()
@@ -106,7 +112,7 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
         && let Some(pid) = child.inner.id()
     {
         let _ = CHROME_PID.set(pid);
-        eprintln!("[browser-fuzz] Chrome launched (pid {})", pid);
+        eprintln!("[thrall] Chrome launched (pid {})", pid);
     }
 
     tokio::spawn(async move {
@@ -115,13 +121,10 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
         }
     });
 
-    let bundle_path = std::env::current_dir()
-        .unwrap()
-        .join("browser-bundle")
-        .join("dist")
-        .join("index.html");
+    // Find the browser bundle - check multiple locations
+    let bundle_path = find_browser_bundle().expect("Could not find browser-bundle/dist/index.html");
     let bundle_url = format!("file://{}#{}", bundle_path.display(), port);
-    eprintln!("[browser-fuzz] Loading bundle from: {}", bundle_url);
+    eprintln!("[thrall] Loading bundle from: {}", bundle_url);
 
     let page = browser.new_page(&bundle_url).await.unwrap();
 
@@ -145,10 +148,10 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
 
     if headed {
         page.execute(EnableParams::default()).await.ok();
-        eprintln!("[browser-fuzz] Network logging enabled");
+        eprintln!("[thrall] Network logging enabled");
     }
 
-    eprintln!("[browser-fuzz] Page loaded, WASM will connect automatically");
+    eprintln!("[thrall] Page loaded, WASM will connect automatically");
 
     let (conn_tx, conn_rx) = watch::channel::<Option<ConnectionHandle>>(None);
     let listener_handle = tokio::spawn(accept_connections(listener, conn_tx));
@@ -174,7 +177,7 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
                     let _ = response_tx.send(Some(result));
                 }
                 Err(e) => {
-                    eprintln!("[browser-fuzz] test_patch error: {:?}", e);
+                    eprintln!("[thrall] test_patch error: {:?}", e);
                     let _ = response_tx.send(None);
                 }
             },
@@ -187,7 +190,7 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
                     let _ = response_tx.send(Some(result));
                 }
                 Err(e) => {
-                    eprintln!("[browser-fuzz] test_roundtrip error: {:?}", e);
+                    eprintln!("[thrall] test_roundtrip error: {:?}", e);
                     let _ = response_tx.send(None);
                 }
             },
@@ -197,7 +200,7 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
                         let _ = response_tx.send(Some(result));
                     }
                     Err(e) => {
-                        eprintln!("[browser-fuzz] parse_to_dom error: {:?}", e);
+                        eprintln!("[thrall] parse_to_dom error: {:?}", e);
                         let _ = response_tx.send(None);
                     }
                 }
@@ -208,45 +211,94 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
     listener_handle.abort();
 }
 
+/// Find the browser bundle directory.
+fn find_browser_bundle() -> Option<std::path::PathBuf> {
+    // Try relative to current dir (for fuzz targets)
+    let cwd = std::env::current_dir().ok()?;
+
+    // Check: ./browser-bundle/dist/index.html
+    let path1 = cwd.join("browser-bundle").join("dist").join("index.html");
+    if path1.exists() {
+        return Some(path1);
+    }
+
+    // Check: ../fuzz/browser-bundle/dist/index.html (for tests in hotmeal crate)
+    let path2 = cwd
+        .join("fuzz")
+        .join("browser-bundle")
+        .join("dist")
+        .join("index.html");
+    if path2.exists() {
+        return Some(path2);
+    }
+
+    // Check via CARGO_MANIFEST_DIR if available
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let manifest_path = std::path::PathBuf::from(manifest_dir);
+
+        // From hotmeal/fuzz/thrall -> hotmeal/fuzz/browser-bundle
+        let path3 = manifest_path
+            .parent()?
+            .join("browser-bundle")
+            .join("dist")
+            .join("index.html");
+        if path3.exists() {
+            return Some(path3);
+        }
+
+        // From hotmeal -> hotmeal/fuzz/browser-bundle
+        let path4 = manifest_path
+            .join("fuzz")
+            .join("browser-bundle")
+            .join("dist")
+            .join("index.html");
+        if path4.exists() {
+            return Some(path4);
+        }
+    }
+
+    None
+}
+
 async fn accept_connections(
     listener: TcpListener,
     conn_tx: watch::Sender<Option<ConnectionHandle>>,
 ) {
     loop {
         eprintln!(
-            "[browser-fuzz] Waiting for browser to connect on {:?}...",
+            "[thrall] Waiting for browser to connect on {:?}...",
             listener.local_addr()
         );
         match listener.accept().await {
             Ok((stream, addr)) => {
                 eprintln!(
-                    "[browser-fuzz] TCP accept from {}, upgrading to WebSocket...",
+                    "[thrall] TCP accept from {}, upgrading to WebSocket...",
                     addr
                 );
                 match accept_async(stream).await {
                     Ok(ws_stream) => {
                         eprintln!(
-                            "[browser-fuzz] WebSocket upgrade complete, starting roam handshake..."
+                            "[thrall] WebSocket upgrade complete, starting roam handshake..."
                         );
                         let transport = WsTransport::new(ws_stream);
                         match ws_accept(transport, HandshakeConfig::default(), NoDispatcher).await {
                             Ok((handle, _incoming, driver)) => {
-                                eprintln!("[browser-fuzz] Roam handshake complete");
+                                eprintln!("[thrall] Roam handshake complete");
                                 tokio::spawn(async move {
                                     if let Err(e) = driver.run().await {
-                                        eprintln!("[browser-fuzz] Driver error: {:?}", e);
+                                        eprintln!("[thrall] Driver error: {:?}", e);
                                     }
                                 });
                                 let _ = conn_tx.send(Some(handle));
-                                eprintln!("[browser-fuzz] Ready to process fuzz requests");
+                                eprintln!("[thrall] Ready to process requests");
                             }
-                            Err(e) => eprintln!("[browser-fuzz] Roam handshake failed: {:?}", e),
+                            Err(e) => eprintln!("[thrall] Roam handshake failed: {:?}", e),
                         }
                     }
-                    Err(e) => eprintln!("[browser-fuzz] WebSocket upgrade failed: {:?}", e),
+                    Err(e) => eprintln!("[thrall] WebSocket upgrade failed: {:?}", e),
                 }
             }
-            Err(e) => eprintln!("[browser-fuzz] Accept failed: {:?}", e),
+            Err(e) => eprintln!("[thrall] Accept failed: {:?}", e),
         }
     }
 }
@@ -257,7 +309,7 @@ static PANIC_HOOK_SET: OnceLock<()> = OnceLock::new();
 
 fn kill_chrome() {
     if let Some(&pid) = CHROME_PID.get() {
-        eprintln!("[browser-fuzz] Killing Chrome (pid {})", pid);
+        eprintln!("[thrall] Killing Chrome (pid {})", pid);
         unsafe {
             libc::kill(pid as i32, libc::SIGKILL);
         }
