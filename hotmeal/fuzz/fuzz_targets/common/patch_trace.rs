@@ -47,8 +47,9 @@ pub struct PatchTrace {
 impl PatchTrace {
     /// Build a trace by applying patches to a document.
     /// Continues even after errors to capture the full trace.
-    pub fn capture<'a>(doc: &mut Document<'a>, patches: &[Patch<'a>]) -> Self {
-        let initial_tree = document_body_to_dom_node(doc);
+    /// Returns None if the document has no body.
+    pub fn capture<'a>(doc: &mut Document<'a>, patches: &[Patch<'a>]) -> Option<Self> {
+        let initial_tree = document_body_to_dom_node(doc)?;
         let mut steps = Vec::with_capacity(patches.len());
         let mut slots = doc.init_patch_slots();
         let mut had_error = false;
@@ -64,7 +65,7 @@ impl PatchTrace {
                     patch_debug,
                     result: PatchStepResult::Failure {
                         error: "skipped due to previous error".to_string(),
-                        dom_tree: document_body_to_dom_node(doc),
+                        dom_tree: document_body_to_dom_node(doc)?,
                     },
                 });
             } else {
@@ -74,7 +75,7 @@ impl PatchTrace {
                             index,
                             patch_debug,
                             result: PatchStepResult::Success {
-                                dom_tree: document_body_to_dom_node(doc),
+                                dom_tree: document_body_to_dom_node(doc)?,
                             },
                         });
                     }
@@ -85,7 +86,7 @@ impl PatchTrace {
                             patch_debug,
                             result: PatchStepResult::Failure {
                                 error: format!("{:?}", e),
-                                dom_tree: document_body_to_dom_node(doc),
+                                dom_tree: document_body_to_dom_node(doc)?,
                             },
                         });
                     }
@@ -93,10 +94,10 @@ impl PatchTrace {
             }
         }
 
-        PatchTrace {
+        Some(PatchTrace {
             initial_tree,
             steps,
-        }
+        })
     }
 
     /// Check if all patches succeeded.

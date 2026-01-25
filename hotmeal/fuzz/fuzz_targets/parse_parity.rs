@@ -27,7 +27,9 @@ fuzz_target!(|data: &[u8]| {
 
     // Parse with html5ever
     let doc = hotmeal::parse(&tendril);
-    let html5ever_tree = common::document_body_to_dom_node(&doc);
+    let Some(html5ever_tree) = common::document_body_to_dom_node(&doc) else {
+        return; // Skip documents without a body
+    };
 
     // Parse with browser
     let Some(browser_tree) = common::parse_to_dom(full_html) else {

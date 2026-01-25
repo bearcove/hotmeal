@@ -38,8 +38,8 @@ bench = false
 
 # Structured DOM generation + native diff+apply
 [[bin]]
-name = "roundtrip"
-path = "fuzz_targets/roundtrip.rs"
+name = "apply_structured"
+path = "fuzz_targets/apply_structured.rs"
 test = false
 doc = false
 bench = false

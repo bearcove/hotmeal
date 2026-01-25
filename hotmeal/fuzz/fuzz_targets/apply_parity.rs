@@ -40,7 +40,9 @@ fn target(data: &[u8]) {
     // Apply patches natively, capturing the full trace
     let normalized_old_tendril = StrTendril::from(browser_result.normalized_old.clone());
     let mut native_doc = hotmeal::parse(&normalized_old_tendril);
-    let native_trace = common::PatchTrace::capture(&mut native_doc, &patches);
+    let Some(native_trace) = common::PatchTrace::capture(&mut native_doc, &patches) else {
+        return; // Skip documents without a body
+    };
 
     // Convert browser result to our trace format
     let browser_trace = common::PatchTrace::from(&browser_result);

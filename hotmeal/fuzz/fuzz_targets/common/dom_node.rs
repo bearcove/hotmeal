@@ -2,9 +2,10 @@ use browser_proto::{DomAttr, DomNode};
 use hotmeal::Document;
 
 /// Convert hotmeal's Document body to DomNode tree for comparison with browser.
-pub fn document_body_to_dom_node(doc: &Document) -> DomNode {
-    let body = doc.body().expect("document has no body");
-    node_to_dom_node(doc, body)
+/// Returns None if the document has no body.
+pub fn document_body_to_dom_node(doc: &Document) -> Option<DomNode> {
+    let body = doc.body()?;
+    Some(node_to_dom_node(doc, body))
 }
 
 fn node_to_dom_node(doc: &Document, node_id: hotmeal::NodeId) -> DomNode {
