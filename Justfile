@@ -10,7 +10,7 @@ build-wasm:
 
 # Run browser-based tests via thrall (launches Chrome)
 test-browser: build-wasm
-    cd hotmeal/fuzz && cargo nextest run browser_tests --no-capture -j1
+    cd hotmeal/fuzz && cargo nextest run -E 'test(browser)' --no-capture -j1
 
 # Run a fuzz target (e.g., just fuzz apply_structured)
 fuzz TARGET *ARGS: build-wasm

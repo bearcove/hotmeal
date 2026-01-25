@@ -10,8 +10,12 @@ use browser_proto::BrowserClient;
 pub use browser_proto::{DomNode, OwnedPatches, RoundtripResult, TestPatchResult};
 use chromiumoxide::{
     Browser, BrowserConfig,
-    cdp::browser_protocol::network::EnableParams,
-    cdp::js_protocol::runtime::{EnableParams as RuntimeEnableParams, EventConsoleApiCalled},
+    cdp::browser_protocol::network::{
+        EnableParams, EventLoadingFailed, EventRequestWillBeSent, EventResponseReceived,
+    },
+    cdp::js_protocol::runtime::{
+        EnableParams as RuntimeEnableParams, EventConsoleApiCalled, EventExceptionThrown,
+    },
     fetcher::{BrowserFetcher, BrowserFetcherOptions},
 };
 use futures_util::StreamExt;
@@ -104,8 +108,9 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
     // Get Chrome executable - either from system or download it
     let chrome_path = get_or_fetch_chrome().await;
 
-    let headed = std::env::var("BROWSER_HEAD").is_ok();
-    let no_sandbox = std::env::var("THRALL_NO_SANDBOX").is_ok() || is_running_in_ci();
+    let headed = std::env::var("BROWSER_HEAD").ok().as_deref() == Some("1");
+    let no_sandbox =
+        std::env::var("THRALL_NO_SANDBOX").ok().as_deref() == Some("1") || is_running_in_ci();
 
     let mut config = BrowserConfig::builder()
         .arg("--allow-file-access-from-files")
@@ -118,8 +123,10 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
     if let Some(path) = chrome_path {
         config = config.chrome_executable(path);
     }
-    if headed {
-        config = config.with_head().arg("--auto-open-devtools-for-tabs");
+    config = config.with_head().arg("--auto-open-devtools-for-tabs");
+    if !headed {
+        // Use new headless mode for better compatibility
+        config = config.arg("--headless=new");
     }
     let (mut browser, mut handler) = Browser::launch(config.build().unwrap()).await.unwrap();
 
@@ -132,41 +139,94 @@ async fn run_browser_worker(mut rx: mpsc::UnboundedReceiver<BrowserRequest>) {
 
     tokio::spawn(async move {
         while let Some(event) = handler.next().await {
-            let _ = event;
+            // Log CDP events for debugging - these include page errors, network issues, etc.
+            eprintln!("[cdp] {:?}", event);
         }
     });
 
-    // Find the browser bundle - check multiple locations
-    let bundle_path = find_browser_bundle().expect("Could not find browser-bundle/dist/index.html");
-    let bundle_url = format!("file://{}#{}", bundle_path.display(), port);
-    eprintln!("[thrall] Loading bundle from: {}", bundle_url);
+    // Create a blank page first so we can set up event listeners before navigation
+    let page = browser.new_page("about:blank").await.unwrap();
 
-    let page = browser.new_page(&bundle_url).await.unwrap();
+    // Enable runtime and network BEFORE navigating
+    page.execute(RuntimeEnableParams::default()).await.ok();
+    page.execute(EnableParams::default()).await.ok();
 
-    if std::env::var("BROWSER_CONSOLE").is_ok() {
-        page.execute(RuntimeEnableParams::default()).await.ok();
-        let mut console_events = page
-            .event_listener::<EventConsoleApiCalled>()
-            .await
-            .unwrap();
-        tokio::spawn(async move {
-            while let Some(event) = console_events.next().await {
+    // Set up console logging - always log errors/warnings, optionally log info/debug
+    let verbose_console = std::env::var("BROWSER_CONSOLE").ok().as_deref() == Some("1");
+    let mut console_events = page
+        .event_listener::<EventConsoleApiCalled>()
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        while let Some(event) = console_events.next().await {
+            let level = format!("{:?}", event.r#type);
+            let is_error = matches!(
+                event.r#type,
+                chromiumoxide::cdp::js_protocol::runtime::ConsoleApiCalledType::Error
+                    | chromiumoxide::cdp::js_protocol::runtime::ConsoleApiCalledType::Warning
+            );
+            if is_error || verbose_console {
                 let args: Vec<String> = event
                     .args
                     .iter()
                     .filter_map(|arg| arg.value.as_ref().map(|v| v.to_string()))
                     .collect();
-                eprintln!("[console] {}", args.join(" "));
+                eprintln!("[console:{}] {}", level, args.join(" "));
             }
-        });
-    }
+        }
+    });
 
-    if headed {
-        page.execute(EnableParams::default()).await.ok();
-        eprintln!("[thrall] Network logging enabled");
-    }
+    // Log JS exceptions
+    let mut exception_events = page.event_listener::<EventExceptionThrown>().await.unwrap();
+    tokio::spawn(async move {
+        while let Some(event) = exception_events.next().await {
+            eprintln!("[js:exception] {:?}", event.exception_details);
+        }
+    });
 
-    eprintln!("[thrall] Page loaded, WASM will connect automatically");
+    // Log network requests to see what's loading
+    let mut request_events = page
+        .event_listener::<EventRequestWillBeSent>()
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        while let Some(event) = request_events.next().await {
+            eprintln!(
+                "[net:request] {} {}",
+                event.request.method, event.request.url
+            );
+        }
+    });
+
+    let mut response_events = page
+        .event_listener::<EventResponseReceived>()
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        while let Some(event) = response_events.next().await {
+            eprintln!(
+                "[net:response] {} {} ({})",
+                event.response.status, event.response.url, &event.response.mime_type
+            );
+        }
+    });
+
+    let mut failed_events = page.event_listener::<EventLoadingFailed>().await.unwrap();
+    tokio::spawn(async move {
+        while let Some(event) = failed_events.next().await {
+            eprintln!("[net:FAILED] {:?} - {}", event.request_id, event.error_text);
+        }
+    });
+
+    eprintln!("[thrall] Network logging enabled");
+
+    // NOW navigate to the bundle
+    let bundle_path = find_browser_bundle().expect("Could not find browser-bundle/dist/index.html");
+    let bundle_url = format!("file://{}#{}", bundle_path.display(), port);
+    eprintln!("[thrall] Loading bundle from: {}", bundle_url);
+
+    page.goto(&bundle_url).await.unwrap();
+    eprintln!("[thrall] Page navigation started, waiting for WASM to connect...");
 
     let (conn_tx, conn_rx) = watch::channel::<Option<ConnectionHandle>>(None);
     let listener_handle = tokio::spawn(accept_connections(listener, conn_tx));
@@ -241,13 +301,9 @@ fn is_running_in_ci() -> bool {
 
 /// Get Chrome executable path, downloading if necessary.
 ///
-/// Returns `None` if Chrome is available on the system PATH (chromiumoxide will find it).
-/// Returns `Some(path)` if we downloaded Chrome ourselves.
+/// Returns `None` to let chromiumoxide find system Chrome.
+/// Returns `Some(path)` if we downloaded Chrome or CHROME_PATH is set.
 async fn get_or_fetch_chrome() -> Option<PathBuf> {
-    // First, check if Chrome is available on the system
-    // chromiumoxide checks common locations, so we only need to download
-    // if it fails to launch
-
     // Try to use CHROME_PATH env var if set
     if let Ok(chrome_path) = std::env::var("CHROME_PATH") {
         let path = PathBuf::from(chrome_path);
@@ -257,29 +313,19 @@ async fn get_or_fetch_chrome() -> Option<PathBuf> {
         }
     }
 
-    // Check if we should skip auto-download (e.g., if Chrome is installed)
+    // Check if we should skip auto-download (use system Chrome)
     if std::env::var("THRALL_NO_DOWNLOAD").is_ok() {
         eprintln!("[thrall] THRALL_NO_DOWNLOAD set, using system Chrome");
         return None;
     }
 
-    // Download Chrome to a cache directory
+    // Download Chrome using chromiumoxide's fetcher
     let cache_dir = dirs_next::cache_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("thrall")
         .join("chrome");
 
-    // Check if we already have a downloaded Chrome
-    let marker_file = cache_dir.join(".fetched");
-    if marker_file.exists() {
-        // Find the executable in the cache
-        if let Some(exe) = find_chrome_executable(&cache_dir) {
-            eprintln!("[thrall] Using cached Chrome: {}", exe.display());
-            return Some(exe);
-        }
-    }
-
-    eprintln!("[thrall] Downloading Chrome to {}...", cache_dir.display());
+    eprintln!("[thrall] Fetching Chrome to {}...", cache_dir.display());
 
     tokio::fs::create_dir_all(&cache_dir).await.ok()?;
 
@@ -290,56 +336,18 @@ async fn get_or_fetch_chrome() -> Option<PathBuf> {
             .ok()?,
     );
 
+    // fetch() handles caching internally - it won't re-download if already present
     match fetcher.fetch().await {
         Ok(info) => {
-            // Create marker file
-            tokio::fs::write(&marker_file, "").await.ok();
-            eprintln!(
-                "[thrall] Chrome downloaded: {}",
-                info.executable_path.display()
-            );
+            eprintln!("[thrall] Using Chrome: {}", info.executable_path.display());
             Some(info.executable_path)
         }
         Err(e) => {
-            eprintln!("[thrall] Failed to download Chrome: {:?}", e);
+            eprintln!("[thrall] Failed to fetch Chrome: {:?}", e);
             eprintln!("[thrall] Will try system Chrome instead");
             None
         }
     }
-}
-
-/// Find Chrome executable in a directory (platform-specific).
-fn find_chrome_executable(dir: &std::path::Path) -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        let app = dir
-            .join("chrome-mac")
-            .join("Chromium.app")
-            .join("Contents")
-            .join("MacOS")
-            .join("Chromium");
-        if app.exists() {
-            return Some(app);
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let exe = dir.join("chrome-linux").join("chrome");
-        if exe.exists() {
-            return Some(exe);
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let exe = dir.join("chrome-win").join("chrome.exe");
-        if exe.exists() {
-            return Some(exe);
-        }
-    }
-
-    None
 }
 
 /// Find the browser bundle directory.
