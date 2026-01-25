@@ -7,12 +7,19 @@
 
 use hotmeal::StrTendril;
 use libfuzzer_sys::fuzz_target;
+use std::sync::Once;
 
 mod common;
+
+static INIT: Once = Once::new();
 
 fuzz_target!(|data: &[u8]| target(data));
 
 fn target(data: &[u8]) {
+    INIT.call_once(|| {
+        facet_testhelpers::setup();
+    });
+
     let Some((full_a, full_b)) = common::prepare_html_inputs(data) else {
         return;
     };

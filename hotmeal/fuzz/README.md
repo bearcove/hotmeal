@@ -36,6 +36,38 @@ Uses a structured DOM generator to create complex, valid HTML documents. Tests t
 cargo fuzz run apply_structured
 ```
 
+## Debugging with Tracing
+
+When you find a crash or failure, you can enable tracing to see detailed logs of what's happening internally. The hotmeal crate has extensive tracing instrumentation.
+
+### Running with tracing enabled
+
+```bash
+FACET_LOG=debug cargo fuzz run <target> <artifact_path> --features tracing
+```
+
+For more verbose output:
+
+```bash
+FACET_LOG=trace cargo fuzz run <target> <artifact_path> --features tracing
+```
+
+### Example: debugging a crash
+
+```bash
+# Run the failing case with debug-level tracing
+FACET_LOG=debug cargo fuzz run apply_structured artifacts/apply_structured/crash-xxx --features tracing
+
+# For even more detail (shows every tree operation)
+FACET_LOG=trace cargo fuzz run apply_structured artifacts/apply_structured/crash-xxx --features tracing
+```
+
+The tracing output shows:
+- DOM tree operations (append, insert, detach)
+- Diff algorithm decisions (matching, edit operations)
+- Shadow tree mutations during patch generation
+- Path computations and slot management
+
 ## Browser Fuzzing
 
 The `parse_parity` and `apply_parity` targets test hotmeal against a real browser's DOM.

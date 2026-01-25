@@ -24,6 +24,7 @@ roam-stream = { git = "https://github.com/bearcove/roam", branch = "main" }
 browser-proto = { path = "browser-proto" }
 libc = "0.2"
 similar = "2.7"
+facet-testhelpers = { git = "https://github.com/facet-rs/facet", branch = "main" }
 
 [dependencies.hotmeal]
 path = ".."
@@ -59,3 +60,6 @@ path = "fuzz_targets/apply_parity.rs"
 test = false
 doc = false
 bench = false
+
+[features]
+tracing = ["hotmeal/tracing"]

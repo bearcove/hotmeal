@@ -8,10 +8,17 @@
 use hotmeal::StrTendril;
 use libfuzzer_sys::fuzz_target;
 use similar::{ChangeTag, TextDiff};
+use std::sync::Once;
 
 mod common;
 
+static INIT: Once = Once::new();
+
 fuzz_target!(|data: &[u8]| {
+    INIT.call_once(|| {
+        facet_testhelpers::setup();
+    });
+
     let Ok(html) = std::str::from_utf8(data) else {
         return;
     };

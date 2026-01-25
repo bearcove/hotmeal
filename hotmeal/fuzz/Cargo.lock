@@ -925,6 +925,7 @@ dependencies = [
  "rapidhash",
  "smallvec",
  "tendril 0.5.0",
+ "tracing",
 ]
 
 [[package]]
@@ -934,6 +935,7 @@ dependencies = [
  "arbitrary",
  "browser-proto",
  "chromiumoxide",
+ "facet-testhelpers",
  "futures-util",
  "hotmeal",
  "libc",

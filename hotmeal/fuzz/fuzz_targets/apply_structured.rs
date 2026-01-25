@@ -6,12 +6,19 @@
 //! then tests native diff+apply roundtrip.
 
 use libfuzzer_sys::fuzz_target;
+use std::sync::Once;
 
 mod common;
 
 use common::{FuzzInput, FuzzMode, chaos_nodes_to_html, extended_nodes_to_html};
 
+static INIT: Once = Once::new();
+
 fuzz_target!(|input: FuzzInput| {
+    INIT.call_once(|| {
+        facet_testhelpers::setup();
+    });
+
     let (old_html, new_html) = match &input.mode {
         FuzzMode::Extended {
             old_doctype,
