@@ -2,7 +2,8 @@
 
 use facet_testhelpers::test;
 use hotmeal::{
-    AttrPair, InsertContent, NodeKind, NodePath, NodeRef, Patch, Stem, StrTendril, parse,
+    AttrPair, InsertContent, NodeKind, NodePath, NodeRef, Patch, Stem, StrTendril, debug, parse,
+    trace,
 };
 use html5ever::{LocalName, QualName, local_name, ns};
 use smallvec::smallvec;

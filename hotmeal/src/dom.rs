@@ -1594,6 +1594,7 @@ impl<'a> TreeSink for ArenaSink<'a> {
 mod tests {
     use super::*;
     use facet_testhelpers::test;
+    use hotmeal::{debug, trace};
 
     /// Helper to create a StrTendril from a string
     fn t(s: &str) -> StrTendril {
@@ -1697,7 +1698,7 @@ mod tests {
         let html = t("<!DOCTYPE html><html><body><p>Hello World</p></body></html>");
         let html_start = html.as_ref().as_ptr() as usize;
         let html_end = html_start + html.len();
-        println!("Input range: {:#x}..{:#x}", html_start, html_end);
+        trace!("Input range: {:#x}..{:#x}", html_start, html_end);
 
         let doc = parse(&html);
 
@@ -1713,8 +1714,8 @@ mod tests {
             let stem_str = stem.as_str();
             let stem_start = stem_str.as_ptr() as usize;
             let stem_end = stem_start + stem_str.len();
-            println!("Stem range: {:#x}..{:#x}", stem_start, stem_end);
-            println!("Stem variant: {:?}", matches!(stem, Stem::Borrowed(_)));
+            trace!("Stem range: {:#x}..{:#x}", stem_start, stem_end);
+            trace!("Stem variant: {:?}", matches!(stem, Stem::Borrowed(_)));
 
             // The text content should be the Borrowed variant
             assert!(
@@ -1983,10 +1984,10 @@ mod tests {
         let body = doc.body().expect("should have body");
         let children: Vec<_> = body.children(&doc.arena).collect();
 
-        println!("Body has {} children", children.len());
+        trace!("Body has {} children", children.len());
         for (i, child_id) in children.iter().enumerate() {
             let node = doc.get(*child_id);
-            println!("  Child {}: {:?}", i, node.kind);
+            trace!("  Child {}: {:?}", i, node.kind);
         }
 
         // Should have 2 children: merged text node + table

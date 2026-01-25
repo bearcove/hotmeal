@@ -118,10 +118,13 @@ pub struct PatchStep {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use facet_testhelpers::test;
+    use hotmeal::{debug, trace};
 
     #[test]
     fn print_method_id() {
         let id = browser_fuzzer_method_id::test_patch();
-        println!("\n\ntest_patch method ID: 0x{:016x}n\n\n", id);
+        trace!(id = %id, "test_patch method ID");
+        let _ = id;
     }
 }
