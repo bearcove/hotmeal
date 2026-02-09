@@ -10,8 +10,19 @@
 //! do NOT shift siblings. Instead, they displace whatever node occupies the
 //! target position into a numbered slot. The DOM's `replaceChild` method
 //! provides atomic displacement, returning the removed node for storage.
+//!
+//! ## Mount Points
+//!
+//! All patch application functions come in two flavors:
+//! - Body-based (e.g. `apply_patches`) — uses `document.body` as the root
+//! - Mount-point-based (e.g. `apply_patches_on`) — uses a CSS selector to find the root element
+//!
+//! The mount-point variants enable applying patches to a subtree of the page,
+//! which is essential for live-reload systems where hotmeal manages only part
+//! of the document.
 
 use hotmeal::{InsertContent, NodeId, StrTendril, parse};
+use hotmeal_server::LiveReloadEvent;
 use smallvec::SmallVec;
 use tracing::{debug, trace};
 use wasm_bindgen::prelude::*;
@@ -97,7 +108,11 @@ impl Default for Slots {
     }
 }
 
-/// Apply a list of patches to the current document.
+// ============================================================================
+// Body-based public API (convenience wrappers)
+// ============================================================================
+
+/// Apply a list of patches (JSON) to the document body.
 /// Returns the number of patches applied, or an error message.
 #[wasm_bindgen]
 pub fn apply_patches_json(patches_json: &str) -> Result<usize, JsValue> {
@@ -107,39 +122,234 @@ pub fn apply_patches_json(patches_json: &str) -> Result<usize, JsValue> {
     apply_patches(&patches)
 }
 
-/// Apply patches to the document (high-level API with internal slots).
+/// Apply patches to the document body (high-level API with internal slots).
 pub fn apply_patches(patches: &[Patch]) -> Result<usize, JsValue> {
     let mut slots = Slots::new();
     apply_patches_with_slots(patches, &mut slots)
 }
 
-/// Apply patches to the document with external slot storage.
+/// Apply patches to the document body with external slot storage.
 /// Use this when applying patches incrementally and need to preserve slot state.
 pub fn apply_patches_with_slots(patches: &[Patch], slots: &mut Slots) -> Result<usize, JsValue> {
-    let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
-    let document = window
-        .document()
-        .ok_or_else(|| JsValue::from_str("no document"))?;
+    let document = get_document()?;
+    let body: Node = document
+        .body()
+        .ok_or_else(|| JsValue::from_str("no body"))?
+        .into();
+    apply_patches_with_slots_on_root(&document, &body, patches, slots)
+}
 
+/// Apply postcard-serialized patches to document body.
+#[wasm_bindgen]
+pub fn apply_patches_postcard(patches_blob: &[u8]) -> Result<usize, JsValue> {
+    let patches: Vec<Patch<'static>> = facet_postcard::from_slice(patches_blob)
+        .map_err(|e| JsValue::from_str(&format!("Failed to deserialize patches: {e}")))?;
+    apply_patches(&patches)
+}
+
+// ============================================================================
+// Mount-point-based public API
+// ============================================================================
+
+/// Apply patches to a mount-point element identified by CSS selector.
+pub fn apply_patches_on(patches: &[Patch], mount_selector: &str) -> Result<usize, JsValue> {
+    let mut slots = Slots::new();
+    apply_patches_with_slots_on(patches, &mut slots, mount_selector)
+}
+
+/// Apply patches to a mount-point element with external slot storage.
+pub fn apply_patches_with_slots_on(
+    patches: &[Patch],
+    slots: &mut Slots,
+    mount_selector: &str,
+) -> Result<usize, JsValue> {
+    let document = get_document()?;
+    let root = resolve_mount_point(&document, mount_selector)?;
+    apply_patches_with_slots_on_root(&document, &root, patches, slots)
+}
+
+/// Apply postcard-serialized patches to a mount-point element.
+#[wasm_bindgen]
+pub fn apply_patches_postcard_on(
+    patches_blob: &[u8],
+    mount_selector: &str,
+) -> Result<usize, JsValue> {
+    let patches: Vec<Patch<'static>> = facet_postcard::from_slice(patches_blob)
+        .map_err(|e| JsValue::from_str(&format!("Failed to deserialize patches: {e}")))?;
+    apply_patches_on(&patches, mount_selector)
+}
+
+// ============================================================================
+// Live-reload WebSocket client
+// ============================================================================
+
+/// Start a live-reload WebSocket client.
+///
+/// Opens a binary WebSocket connection to `ws_url`, receives postcard-encoded
+/// `LiveReloadEvent` messages, and applies patches to the element matched by
+/// `mount_selector`. Handles reconnection with exponential backoff.
+#[wasm_bindgen]
+pub fn start_live_reload(ws_url: &str, mount_selector: &str) -> Result<(), JsValue> {
+    let ws_url = ws_url.to_owned();
+    let mount_selector = mount_selector.to_owned();
+
+    wasm_bindgen_futures::spawn_local(async move {
+        live_reload_loop(&ws_url, &mount_selector).await;
+    });
+
+    Ok(())
+}
+
+async fn live_reload_loop(ws_url: &str, mount_selector: &str) {
+    use wasm_bindgen::JsCast;
+    use web_sys::{MessageEvent, WebSocket};
+
+    let mut backoff_ms: u32 = 100;
+    let max_backoff_ms: u32 = 5000;
+
+    loop {
+        log(&format!("[hotmeal-wasm] connecting to {ws_url}"));
+
+        let ws = match WebSocket::new(ws_url) {
+            Ok(ws) => ws,
+            Err(e) => {
+                log(&format!("[hotmeal-wasm] WebSocket creation failed: {e:?}"));
+                sleep_ms(backoff_ms).await;
+                backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
+                continue;
+            }
+        };
+
+        ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
+
+        // Wait for open
+        let open_promise = js_sys::Promise::new(&mut |resolve, _reject| {
+            let onopen = Closure::once_into_js(move || {
+                resolve.call0(&JsValue::NULL).unwrap();
+            });
+            ws.set_onopen(Some(onopen.unchecked_ref()));
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(open_promise).await;
+
+        log("[hotmeal-wasm] WebSocket connected");
+        backoff_ms = 100;
+
+        // Set up message handler
+        let mount = mount_selector.to_owned();
+        let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
+            let data = event.data();
+            if let Ok(buffer) = data.dyn_into::<js_sys::ArrayBuffer>() {
+                let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
+                if let Err(e) = handle_live_reload_message(&bytes, &mount) {
+                    log(&format!("[hotmeal-wasm] error handling message: {e:?}"));
+                }
+            }
+        });
+        ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+
+        // Wait for close
+        let close_promise = js_sys::Promise::new(&mut |resolve, _reject| {
+            let onclose = Closure::once_into_js(move || {
+                resolve.call0(&JsValue::NULL).unwrap();
+            });
+            ws.set_onclose(Some(onclose.unchecked_ref()));
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(close_promise).await;
+
+        // Clean up
+        ws.set_onmessage(None);
+        drop(onmessage);
+
+        log("[hotmeal-wasm] WebSocket closed, reconnecting...");
+        sleep_ms(backoff_ms).await;
+        backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
+    }
+}
+
+fn handle_live_reload_message(bytes: &[u8], mount_selector: &str) -> Result<(), JsValue> {
+    let event = LiveReloadEvent::from_postcard(bytes)
+        .map_err(|e| JsValue::from_str(&format!("failed to deserialize event: {e}")))?;
+
+    match event {
+        LiveReloadEvent::Reload => {
+            log("[hotmeal-wasm] full reload requested");
+            let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+            window.location().reload()?;
+        }
+        LiveReloadEvent::Patches {
+            route: _,
+            patches_blob,
+        } => {
+            let count = apply_patches_postcard_on(&patches_blob, mount_selector)?;
+            log(&format!("[hotmeal-wasm] applied {count} patches"));
+        }
+        LiveReloadEvent::HeadChanged { route: _ } => {
+            log("[hotmeal-wasm] head changed, reloading");
+            let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+            window.location().reload()?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn sleep_ms(ms: u32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        let window = web_sys::window().unwrap();
+        window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32)
+            .unwrap();
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
+// ============================================================================
+// Internal implementation (root-parameterized)
+// ============================================================================
+
+fn get_document() -> Result<Document, JsValue> {
+    let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+    window
+        .document()
+        .ok_or_else(|| JsValue::from_str("no document"))
+}
+
+fn resolve_mount_point(doc: &Document, selector: &str) -> Result<Node, JsValue> {
+    // Special-case "body" selector for convenience
+    if selector == "body" {
+        return doc
+            .body()
+            .map(|b| b.into())
+            .ok_or_else(|| JsValue::from_str("no body"));
+    }
+
+    doc.query_selector(selector)
+        .map_err(|e| JsValue::from_str(&format!("invalid selector {selector:?}: {e:?}")))?
+        .map(|el| el.into())
+        .ok_or_else(|| JsValue::from_str(&format!("mount point not found: {selector}")))
+}
+
+/// Core patch application logic. Operates on an arbitrary root node.
+fn apply_patches_with_slots_on_root(
+    doc: &Document,
+    root: &Node,
+    patches: &[Patch],
+    slots: &mut Slots,
+) -> Result<usize, JsValue> {
     let count = patches.len();
     log(&format!("[hotmeal-wasm] applying {} patches", count));
 
     for (i, patch) in patches.iter().enumerate() {
         log(&format!("[hotmeal-wasm] patch {}: {:?}", i, patch));
-        apply_patch(&document, patch, slots).map_err(|e| {
-            // Try to extract error message from JsValue
+        apply_patch(doc, root, patch, slots).map_err(|e| {
             let msg = e
                 .as_string()
                 .or_else(|| {
-                    // Try to get .message property (for Error objects)
                     js_sys::Reflect::get(&e, &JsValue::from_str("message"))
                         .ok()
                         .and_then(|v| v.as_string())
                 })
-                .or_else(|| {
-                    // Try JSON.stringify as last resort
-                    js_sys::JSON::stringify(&e).ok().and_then(|v| v.as_string())
-                })
+                .or_else(|| js_sys::JSON::stringify(&e).ok().and_then(|v| v.as_string()))
                 .unwrap_or_else(|| format!("{:?}", e));
             JsValue::from_str(&format!("patch {}: {}", i, msg))
         })?;
@@ -148,18 +358,33 @@ pub fn apply_patches_with_slots(patches: &[Patch], slots: &mut Slots) -> Result<
     Ok(count)
 }
 
-fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), JsValue> {
+/// Get the slot root node. Slot 0 uses the provided `root`, higher slots use stored nodes.
+fn get_slot_root(root: &Node, slot: u32, slots: &Slots) -> Result<Node, JsValue> {
+    if slot == 0 {
+        Ok(root.clone())
+    } else {
+        slots
+            .get(slot)
+            .cloned()
+            .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))
+    }
+}
+
+fn apply_patch(
+    doc: &Document,
+    root: &Node,
+    patch: &Patch,
+    slots: &mut Slots,
+) -> Result<(), JsValue> {
     debug!(?patch, "applying patch");
     match patch {
         Patch::SetText { path, text } => {
-            let node = find_node(doc, path, slots)?;
+            let node = find_node(root, path, slots)?;
             node.set_text_content(Some(text));
         }
 
         Patch::SetAttribute { path, name, value } => {
-            let el = find_element(doc, path, slots)?;
-            // Convert QualName to attribute name string
-            // Filter out empty prefixes - they should not produce ":local"
+            let el = find_element(root, path, slots)?;
             let attr_name = match name.prefix.as_ref().filter(|p| !p.is_empty()) {
                 Some(prefix) => format!("{}:{}", prefix, name.local),
                 None => name.local.to_string(),
@@ -168,9 +393,7 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
         }
 
         Patch::RemoveAttribute { path, name } => {
-            let el = find_element(doc, path, slots)?;
-            // Convert QualName to attribute name string
-            // Filter out empty prefixes - they should not produce ":local"
+            let el = find_element(root, path, slots)?;
             let attr_name = match name.prefix.as_ref().filter(|p| !p.is_empty()) {
                 Some(prefix) => format!("{}:{}", prefix, name.local),
                 None => name.local.to_string(),
@@ -182,28 +405,17 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             let NodeRef(path) = node;
             let slot = path.0[0];
             if slot == 0 {
-                // Main tree - replace with empty text node (no shifting - Chawathe semantics)
                 let rel_path = NodePath(SmallVec::from_slice(&path.0[1..]));
-                let body: Node = doc
-                    .body()
-                    .ok_or_else(|| JsValue::from_str("no body"))?
-                    .into();
-                let target = navigate_within_node(&body, &rel_path)?;
+                let target = navigate_within_node(root, &rel_path)?;
                 if let Some(parent) = target.parent_node() {
                     let empty_text: Node = doc.create_text_node("").into();
                     parent.replace_child(&empty_text, &target)?;
                 }
             } else {
-                // Slot - just remove from slots if it's the root, otherwise navigate within
                 if path.0.len() == 1 {
-                    // Removing the slot root itself
                     slots.take(slot);
                 } else {
-                    // Removing a child within the slot
-                    let slot_root = slots
-                        .get(slot)
-                        .cloned()
-                        .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?;
+                    let slot_root = get_slot_root(root, slot, slots)?;
                     let rel_path = NodePath(SmallVec::from_slice(&path.0[1..]));
                     let target = navigate_within_node(&slot_root, &rel_path)?;
                     if let Some(parent) = target.parent_node() {
@@ -221,8 +433,6 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             children,
             detach_to_slot,
         } => {
-            // Extract parent and position from NodeRef
-            // Path format: [slot, ...rest] where first element is slot number
             let NodeRef(path) = at;
             if path.0.len() < 2 {
                 return Err(JsValue::from_str("InsertElement: path too short"));
@@ -230,19 +440,8 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             let slot = path.0[0];
             let position = path.0[path.0.len() - 1];
 
-            // Get the slot root (body for slot 0, or stored slot node)
-            let slot_root: Node = if slot == 0 {
-                doc.body()
-                    .ok_or_else(|| JsValue::from_str("no body"))?
-                    .into()
-            } else {
-                slots
-                    .get(slot)
-                    .cloned()
-                    .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?
-            };
+            let slot_root = get_slot_root(root, slot, slots)?;
 
-            // Navigate to parent (path minus first element [slot] and last element [position])
             let parent_path = NodePath(SmallVec::from_slice(&path.0[1..path.0.len() - 1]));
             let parent_node = if parent_path.0.is_empty() {
                 slot_root
@@ -255,24 +454,17 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
                 .ok_or_else(|| JsValue::from_str("parent is not an element"))?
                 .clone();
 
-            // Create the new element - try programmatic creation first, fall back to innerHTML
-            // for exotic attributes that can't be set via setAttribute
             let new_node: Node = match create_element_with_attrs(doc, tag, attrs) {
                 Ok(el) => {
-                    // Add children
                     for child in children {
                         let child_node = create_insert_content(doc, child)?;
                         el.append_child(&child_node)?;
                     }
                     el.into()
                 }
-                Err(_) => {
-                    // Fall back to creating via innerHTML for exotic attributes
-                    create_element_via_html(doc, tag, attrs, children)?
-                }
+                Err(_) => create_element_via_html(doc, tag, attrs, children)?,
             };
 
-            // Insert at position with Chawathe displacement semantics
             insert_at_position(
                 doc,
                 &parent_el,
@@ -288,8 +480,6 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             text,
             detach_to_slot,
         } => {
-            // Extract parent and position from NodeRef
-            // Path format: [slot, ...rest] where first element is slot number
             let NodeRef(path) = at;
             if path.0.len() < 2 {
                 return Err(JsValue::from_str("InsertText: path too short"));
@@ -297,19 +487,8 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             let slot = path.0[0];
             let position = path.0[path.0.len() - 1];
 
-            // Get the slot root (body for slot 0, or stored slot node)
-            let slot_root: Node = if slot == 0 {
-                doc.body()
-                    .ok_or_else(|| JsValue::from_str("no body"))?
-                    .into()
-            } else {
-                slots
-                    .get(slot)
-                    .cloned()
-                    .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?
-            };
+            let slot_root = get_slot_root(root, slot, slots)?;
 
-            // Navigate to parent (path minus first element [slot] and last element [position])
             let parent_path = NodePath(SmallVec::from_slice(&path.0[1..path.0.len() - 1]));
             let parent_node = if parent_path.0.is_empty() {
                 slot_root
@@ -322,10 +501,8 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
                 .ok_or_else(|| JsValue::from_str("parent is not an element"))?
                 .clone();
 
-            // Create text node
             let text_node = doc.create_text_node(text);
 
-            // Insert at position with Chawathe displacement semantics
             insert_at_position(
                 doc,
                 &parent_el,
@@ -341,8 +518,6 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             text,
             detach_to_slot,
         } => {
-            // Extract parent and position from NodeRef
-            // Path format: [slot, ...rest] where first element is slot number
             let NodeRef(path) = at;
             if path.0.len() < 2 {
                 return Err(JsValue::from_str("InsertComment: path too short"));
@@ -350,19 +525,8 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             let slot = path.0[0];
             let position = path.0[path.0.len() - 1];
 
-            // Get the slot root (body for slot 0, or stored slot node)
-            let slot_root: Node = if slot == 0 {
-                doc.body()
-                    .ok_or_else(|| JsValue::from_str("no body"))?
-                    .into()
-            } else {
-                slots
-                    .get(slot)
-                    .cloned()
-                    .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?
-            };
+            let slot_root = get_slot_root(root, slot, slots)?;
 
-            // Navigate to parent (path minus first element [slot] and last element [position])
             let parent_path = NodePath(SmallVec::from_slice(&path.0[1..path.0.len() - 1]));
             let parent_node = if parent_path.0.is_empty() {
                 slot_root
@@ -375,10 +539,8 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
                 .ok_or_else(|| JsValue::from_str("parent is not an element"))?
                 .clone();
 
-            // Create comment node
             let comment_node = doc.create_comment(text);
 
-            // Insert at position with Chawathe displacement semantics
             insert_at_position(
                 doc,
                 &parent_el,
@@ -390,31 +552,24 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
         }
 
         Patch::UpdateProps { path, changes } => {
-            let node = find_node(doc, path, slots)?;
+            let node = find_node(root, path, slots)?;
 
-            // Handle text content updates
             if let Some(text_change) = changes.iter().find(|c| matches!(c.name, PropKey::Text))
                 && let Some(v) = &text_change.value
             {
                 node.set_text_content(Some(v));
             }
-            // None means keep existing - do nothing
 
-            // Handle element attribute updates
-            // The changes vec represents the ENTIRE final attribute state in order
             if let Some(el) = node.dyn_ref::<Element>() {
-                // Save existing attribute values (for None = keep existing)
                 let existing: std::collections::HashMap<String, String> =
                     (0..el.attributes().length())
                         .filter_map(|i| el.attributes().item(i).map(|a| (a.name(), a.value())))
                         .collect();
 
-                // Remove ALL existing attributes first to preserve order
                 for attr_name in existing.keys() {
                     el.remove_attribute(attr_name)?;
                 }
 
-                // Re-add attributes in the order specified by changes
                 for change in changes {
                     if let PropKey::Attr(ref qual_name) = change.name {
                         let attr_name = if let Some(ref prefix) = qual_name.prefix {
@@ -422,7 +577,6 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
                         } else {
                             qual_name.local.to_string()
                         };
-                        // Use new value if Some, otherwise keep existing
                         let value = match &change.value {
                             Some(v) => v.as_ref().to_string(),
                             None => existing.get(&attr_name).cloned().unwrap_or_default(),
@@ -441,16 +595,13 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
             let from_path = &from.0;
             let to_path = &to.0;
 
-            // Get the node to move
             let node = if from_path.0.len() == 1 {
-                // Path of length 1 means [slot] - moving the entire slot root
                 let slot = from_path.0[0];
                 slots
                     .take(slot)
                     .ok_or_else(|| JsValue::from_str(&format!("slot {} is empty", slot)))?
             } else {
-                // Navigate to the node and detach with placeholder
-                let node = find_node(doc, from_path, slots)?;
+                let node = find_node(root, from_path, slots)?;
                 if let Some(parent) = node.parent_node() {
                     let empty_text = doc.create_text_node("");
                     parent.replace_child(&empty_text, &node)?;
@@ -458,19 +609,17 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
                 node
             };
 
-            // Get parent and position from target path
             if to_path.0.len() < 2 {
                 return Err(JsValue::from_str("Move: target path too short"));
             }
             let parent_path = NodePath(SmallVec::from_slice(&to_path.0[..to_path.0.len() - 1]));
             let target_idx = to_path.0[to_path.0.len() - 1];
 
-            let parent_node = find_node(doc, &parent_path, slots)?;
+            let parent_node = find_node(root, &parent_path, slots)?;
             let parent_el = parent_node
                 .dyn_ref::<Element>()
                 .ok_or_else(|| JsValue::from_str("Move: parent is not an element"))?;
 
-            // Insert at the target position with Chawathe displacement
             insert_at_position(
                 doc,
                 parent_el,
@@ -482,8 +631,7 @@ fn apply_patch(doc: &Document, patch: &Patch, slots: &mut Slots) -> Result<(), J
         }
 
         Patch::OpaqueChanged { path, content } => {
-            let el = find_element(doc, path, slots)?;
-            // Dispatch a CustomEvent so client-side JS can handle the content change
+            let el = find_element(root, path, slots)?;
             let detail = js_sys::Object::new();
             js_sys::Reflect::set(
                 &detail,
@@ -525,7 +673,6 @@ fn insert_at_position(
     );
 
     if position < current_len {
-        // Position exists - replace (Chawathe semantics - no shift)
         let existing = children.item(pos).unwrap();
         trace!(
             existing_node_type = existing.node_type(),
@@ -538,7 +685,6 @@ fn insert_at_position(
             slots.store(slot, replaced);
         }
     } else {
-        // Position is beyond current children - grow with empty text placeholders
         trace!(
             growing_from = current_len,
             growing_to = position,
@@ -582,14 +728,12 @@ fn create_element_via_html(
 ) -> Result<Node, JsValue> {
     use web_sys::HtmlTemplateElement;
 
-    // Serialize the element to HTML
     let mut html = format!("<{}", tag);
     for attr in attrs {
         let attr_name = match attr.name.prefix.as_ref().filter(|p| !p.is_empty()) {
             Some(prefix) => format!("{}:{}", prefix, attr.name.local),
             None => attr.name.local.to_string(),
         };
-        // Escape attribute value for HTML
         let escaped_value = attr
             .value
             .replace('&', "&amp;")
@@ -600,22 +744,18 @@ fn create_element_via_html(
     }
     html.push('>');
 
-    // Serialize children
     for child in children {
         serialize_insert_content(&mut html, child);
     }
 
-    // Close tag
     html.push_str(&format!("</{}>", tag));
 
-    // Parse via template element
     let template = doc
         .create_element("template")?
         .dyn_into::<HtmlTemplateElement>()
         .map_err(|_| JsValue::from_str("failed to create template element"))?;
     template.set_inner_html(&html);
 
-    // Extract the first child from the template content
     template
         .content()
         .first_child()
@@ -654,7 +794,6 @@ fn serialize_insert_content(out: &mut String, content: &InsertContent) {
             out.push('>');
         }
         InsertContent::Text(text) => {
-            // Escape text content
             out.push_str(
                 &text
                     .replace('&', "&amp;")
@@ -677,22 +816,16 @@ fn create_insert_content(doc: &Document, content: &InsertContent) -> Result<Node
             tag,
             attrs,
             children,
-        } => {
-            // Try programmatic creation first, fall back to innerHTML for exotic attributes
-            match create_element_with_attrs(doc, tag, attrs) {
-                Ok(el) => {
-                    for child in children {
-                        let child_node = create_insert_content(doc, child)?;
-                        el.append_child(&child_node)?;
-                    }
-                    Ok(el.into())
+        } => match create_element_with_attrs(doc, tag, attrs) {
+            Ok(el) => {
+                for child in children {
+                    let child_node = create_insert_content(doc, child)?;
+                    el.append_child(&child_node)?;
                 }
-                Err(_) => {
-                    // Fall back to innerHTML
-                    create_element_via_html(doc, tag, attrs, children)
-                }
+                Ok(el.into())
             }
-        }
+            Err(_) => create_element_via_html(doc, tag, attrs, children),
+        },
         InsertContent::Text(text) => Ok(doc.create_text_node(text).into()),
         InsertContent::Comment(text) => Ok(doc.create_comment(text).into()),
     }
@@ -711,8 +844,8 @@ fn navigate_within_node(root: &Node, path: &NodePath) -> Result<Node, JsValue> {
 }
 
 /// Find a node by slot-based path.
-/// Path format: [slot, child1, child2, ...] where slot 0 = body
-fn find_node(doc: &Document, path: &NodePath, slots: &Slots) -> Result<Node, JsValue> {
+/// Path format: [slot, child1, child2, ...] where slot 0 = root
+fn find_node(root: &Node, path: &NodePath, slots: &Slots) -> Result<Node, JsValue> {
     if path.0.is_empty() {
         return Err(JsValue::from_str("empty path"));
     }
@@ -720,19 +853,8 @@ fn find_node(doc: &Document, path: &NodePath, slots: &Slots) -> Result<Node, JsV
     let slot = path.0[0];
     trace!(?path, slot, "find_node");
 
-    // Get the slot root
-    let slot_root: Node = if slot == 0 {
-        doc.body()
-            .ok_or_else(|| JsValue::from_str("no body"))?
-            .into()
-    } else {
-        slots
-            .get(slot)
-            .ok_or_else(|| JsValue::from_str(&format!("slot {} not found", slot)))?
-            .clone()
-    };
+    let slot_root = get_slot_root(root, slot, slots)?;
 
-    // Navigate within the slot root
     let mut current = slot_root;
     for &idx in &path.0[1..] {
         let children = current.child_nodes();
@@ -755,8 +877,8 @@ fn find_node(doc: &Document, path: &NodePath, slots: &Slots) -> Result<Node, JsV
 }
 
 /// Find an element by DOM path.
-fn find_element(doc: &Document, path: &NodePath, slots: &Slots) -> Result<Element, JsValue> {
-    let node = find_node(doc, path, slots)?;
+fn find_element(root: &Node, path: &NodePath, slots: &Slots) -> Result<Element, JsValue> {
+    let node = find_node(root, path, slots)?;
     node.dyn_into::<Element>()
         .map_err(|_| JsValue::from_str("node is not an element"))
 }
@@ -870,7 +992,6 @@ pub fn dump_rust_parsed(html: &str) -> Result<String, JsValue> {
         result
     }
 
-    // Find the body element to match the browser DOM dump behavior
     fn find_body(doc: &hotmeal::Document, node_id: NodeId) -> Option<NodeId> {
         let node = doc.get(node_id);
         if let NodeKind::Element(elem) = &node.kind

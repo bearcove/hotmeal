@@ -20,13 +20,18 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 hotmeal = { workspace = true }
 facet-json = { workspace = true }
+facet-postcard = { workspace = true }
+hotmeal-server = { workspace = true }
 js-sys = { workspace = true }
 smallvec = { workspace = true }
 tracing = { workspace = true }
 wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = "0.4"
 wasm-tracing = { workspace = true }
 web-sys = { workspace = true, features = [
     "Attr",
+    "BinaryType",
+    "CloseEvent",
     "Comment",
     "console",
     "CustomEvent",
@@ -34,12 +39,16 @@ web-sys = { workspace = true, features = [
     "Document",
     "DocumentFragment",
     "Element",
+    "ErrorEvent",
     "EventTarget",
     "HtmlElement",
     "HtmlTemplateElement",
+    "Location",
+    "MessageEvent",
     "NamedNodeMap",
     "Node",
     "NodeList",
     "Text",
+    "WebSocket",
     "Window",
 ] }

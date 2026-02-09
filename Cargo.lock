@@ -433,6 +433,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "facet-postcard"
+version = "0.43.2"
+source = "git+https://github.com/facet-rs/facet?branch=main#8a80c523d025667d158d21f66700b4a37735107c"
+dependencies = [
+ "facet-core",
+ "facet-format",
+ "facet-path",
+ "facet-reflect",
+ "facet-value",
+ "tracing",
+]
+
+[[package]]
 name = "facet-reflect"
 version = "0.43.2"
 source = "git+https://github.com/facet-rs/facet?branch=main#3f69ddc61bed61e669debbb1defce8c465d2a5c0"
@@ -471,6 +484,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "facet-value"
+version = "0.43.2"
+source = "git+https://github.com/facet-rs/facet?branch=main#8a80c523d025667d158d21f66700b4a37735107c"
+dependencies = [
+ "facet-core",
+ "facet-format",
+ "facet-reflect",
+ "indexmap",
+]
+
+[[package]]
 name = "fancy-regex"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -492,6 +516,31 @@ name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
+name = "futures-core"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05f29059c0c2090612e8d742178b0580d2dc940c837851ad723096f87af6663e"
+
+[[package]]
+name = "futures-task"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f90f7dce0722e95104fcb095585910c0977252f286e354b5e3bd38902cd99988"
+
+[[package]]
+name = "futures-util"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9fa08315bb612088cc391249efdc3bc77536f16c91f6cf495e6fbe85b20a4a81"
+dependencies = [
+ "futures-core",
+ "futures-task",
+ "pin-project-lite",
+ "pin-utils",
+ "slab",
+]
 
 [[package]]
 name = "gimli"
@@ -534,15 +583,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "hotmeal-server"
+version = "0.1.0"
+dependencies = [
+ "facet",
+ "facet-json",
+ "facet-postcard",
+ "hotmeal",
+ "tracing",
+]
+
+[[package]]
 name = "hotmeal-wasm"
 version = "0.1.0"
 dependencies = [
  "facet-json",
+ "facet-postcard",
  "hotmeal",
+ "hotmeal-server",
  "js-sys",
  "smallvec",
  "tracing",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-tracing",
  "web-sys",
 ]
@@ -821,6 +884,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b3cff922bd51709b605d9ead9aa71031d81447142d828eb4a6eba76fe619f9b"
 
 [[package]]
+name = "pin-utils"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
+
+[[package]]
 name = "precomputed-hash"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -977,6 +1046,12 @@ name = "siphasher"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56199f7ddabf13fe5074ce809e7d3f42b42ae711800501b5b16ea82ad029c39d"
+
+[[package]]
+name = "slab"
+version = "0.4.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smallvec"
@@ -1212,6 +1287,20 @@ dependencies = [
  "rustversion",
  "wasm-bindgen-macro",
  "wasm-bindgen-shared",
+]
+
+[[package]]
+name = "wasm-bindgen-futures"
+version = "0.4.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70a6e77fd0ae8029c9ea0063f87c46fde723e7d887703d74ad2616d792e51e6f"
+dependencies = [
+ "cfg-if",
+ "futures-util",
+ "js-sys",
+ "once_cell",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
