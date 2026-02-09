@@ -411,17 +411,15 @@ fn apply_patch(
                     let empty_text: Node = doc.create_text_node("").into();
                     parent.replace_child(&empty_text, &target)?;
                 }
+            } else if path.0.len() == 1 {
+                slots.take(slot);
             } else {
-                if path.0.len() == 1 {
-                    slots.take(slot);
-                } else {
-                    let slot_root = get_slot_root(root, slot, slots)?;
-                    let rel_path = NodePath(SmallVec::from_slice(&path.0[1..]));
-                    let target = navigate_within_node(&slot_root, &rel_path)?;
-                    if let Some(parent) = target.parent_node() {
-                        let empty_text = doc.create_text_node("");
-                        parent.replace_child(&empty_text, &target)?;
-                    }
+                let slot_root = get_slot_root(root, slot, slots)?;
+                let rel_path = NodePath(SmallVec::from_slice(&path.0[1..]));
+                let target = navigate_within_node(&slot_root, &rel_path)?;
+                if let Some(parent) = target.parent_node() {
+                    let empty_text = doc.create_text_node("");
+                    parent.replace_child(&empty_text, &target)?;
                 }
             }
         }
