@@ -3045,4 +3045,184 @@ mod tests {
             "HTML output should match after OpaqueChanged"
         );
     }
+
+    #[test]
+    fn test_opaque_deeply_nested_content() {
+        // Opaque node with deeply nested content changing
+        let old_html = t(
+            r#"<html><body><div data-hotmeal-opaque><div class="wrapper"><ul><li>item 1</li><li>item 2</li></ul></div></div></body></html>"#,
+        );
+        let new_html = t(
+            r#"<html><body><div data-hotmeal-opaque><div class="wrapper"><ul><li>item A</li><li>item B</li><li>item C</li></ul></div></div></body></html>"#,
+        );
+
+        let old = dom::parse(&old_html);
+        let new = dom::parse(&new_html);
+        let patches = diff(&old, &new).unwrap();
+
+        let opaque_count = patches
+            .iter()
+            .filter(|p| matches!(p, Patch::OpaqueChanged { .. }))
+            .count();
+        assert_eq!(opaque_count, 1, "Should emit one OpaqueChanged");
+
+        // No structural patches for deeply nested children
+        let structural: Vec<_> = patches
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p,
+                    Patch::InsertElement { .. }
+                        | Patch::InsertText { .. }
+                        | Patch::Remove { .. }
+                        | Patch::Move { .. }
+                        | Patch::SetText { .. }
+                )
+            })
+            .collect();
+        assert!(
+            structural.is_empty(),
+            "Deeply nested opaque children should not produce structural patches, got: {:?}",
+            structural
+        );
+    }
+
+    #[test]
+    fn test_opaque_multiple_siblings() {
+        // Multiple opaque nodes as siblings, each changing independently
+        let old_html = t(
+            r#"<html><body><div data-hotmeal-opaque><p>chart 1</p></div><div data-hotmeal-opaque><p>chart 2</p></div></body></html>"#,
+        );
+        let new_html = t(
+            r#"<html><body><div data-hotmeal-opaque><p>updated 1</p></div><div data-hotmeal-opaque><p>updated 2</p></div></body></html>"#,
+        );
+
+        let old = dom::parse(&old_html);
+        let new = dom::parse(&new_html);
+        let patches = diff(&old, &new).unwrap();
+
+        let opaque_patches: Vec<_> = patches
+            .iter()
+            .filter(|p| matches!(p, Patch::OpaqueChanged { .. }))
+            .collect();
+        assert_eq!(
+            opaque_patches.len(),
+            2,
+            "Should emit OpaqueChanged for each changed opaque sibling, got: {:?}",
+            patches
+        );
+    }
+
+    #[test]
+    fn test_opaque_structural_replacement() {
+        // Content changes from one element type to a completely different one
+        // (like mermaid: <pre> -> <svg>)
+        let old_html = t(
+            r#"<html><body><div data-hotmeal-opaque><pre class="mermaid">graph TD; A-->B;</pre></div></body></html>"#,
+        );
+        let new_html = t(
+            r#"<html><body><div data-hotmeal-opaque><svg><rect></rect></svg></div></body></html>"#,
+        );
+
+        let old = dom::parse(&old_html);
+        let new = dom::parse(&new_html);
+        let patches = diff(&old, &new).unwrap();
+
+        let opaque_count = patches
+            .iter()
+            .filter(|p| matches!(p, Patch::OpaqueChanged { .. }))
+            .count();
+        assert_eq!(
+            opaque_count, 1,
+            "Should emit OpaqueChanged even with radically different content"
+        );
+
+        // Verify the new content is carried in the patch
+        if let Some(Patch::OpaqueChanged { content, .. }) = patches
+            .iter()
+            .find(|p| matches!(p, Patch::OpaqueChanged { .. }))
+        {
+            assert!(
+                content.as_ref().contains("<svg>"),
+                "OpaqueChanged content should contain new SVG, got: {:?}",
+                content.as_ref()
+            );
+        }
+    }
+
+    #[test]
+    fn test_opaque_only_one_changed() {
+        // Two opaque siblings, only one changes
+        let old_html = t(
+            r#"<html><body><div data-hotmeal-opaque><p>same</p></div><div data-hotmeal-opaque><p>old</p></div></body></html>"#,
+        );
+        let new_html = t(
+            r#"<html><body><div data-hotmeal-opaque><p>same</p></div><div data-hotmeal-opaque><p>new</p></div></body></html>"#,
+        );
+
+        let old = dom::parse(&old_html);
+        let new = dom::parse(&new_html);
+        let patches = diff(&old, &new).unwrap();
+
+        let opaque_patches: Vec<_> = patches
+            .iter()
+            .filter(|p| matches!(p, Patch::OpaqueChanged { .. }))
+            .collect();
+        assert_eq!(
+            opaque_patches.len(),
+            1,
+            "Only the changed opaque node should emit OpaqueChanged, got: {:?}",
+            patches
+        );
+    }
+
+    #[test]
+    fn test_opaque_roundtrip_deeply_nested() {
+        // Full roundtrip test with deep nested content change
+        let old_html = t(
+            r#"<html><body><div data-hotmeal-opaque><div><span>old text</span></div></div></body></html>"#,
+        );
+        let new_html = t(
+            r#"<html><body><div data-hotmeal-opaque><div><span>new text</span><span>extra</span></div></div></body></html>"#,
+        );
+
+        let old = dom::parse(&old_html);
+        let new = dom::parse(&new_html);
+        let patches = diff(&old, &new).unwrap();
+
+        let mut doc = dom::parse(&old_html);
+        doc.apply_patches(patches).expect("apply should succeed");
+
+        let result = doc.to_html();
+        let expected = dom::parse(&new_html).to_html();
+        assert_eq!(
+            result, expected,
+            "Deeply nested opaque roundtrip should match"
+        );
+    }
+
+    #[test]
+    fn test_opaque_roundtrip_with_sibling_changes() {
+        // Full roundtrip: both opaque and normal siblings change
+        let old_html = t(
+            r#"<html><body><div data-hotmeal-opaque><p>old chart</p></div><p>before text</p></body></html>"#,
+        );
+        let new_html = t(
+            r#"<html><body><div data-hotmeal-opaque><p>new chart</p></div><p>after text</p></body></html>"#,
+        );
+
+        let old = dom::parse(&old_html);
+        let new = dom::parse(&new_html);
+        let patches = diff(&old, &new).unwrap();
+
+        let mut doc = dom::parse(&old_html);
+        doc.apply_patches(patches).expect("apply should succeed");
+
+        let result = doc.to_html();
+        let expected = dom::parse(&new_html).to_html();
+        assert_eq!(
+            result, expected,
+            "Roundtrip with sibling changes should match"
+        );
+    }
 }
