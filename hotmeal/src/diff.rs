@@ -274,6 +274,10 @@ pub enum Patch<'a> {
         path: NodePath,
         changes: Vec<PropChange<'a>>,
     },
+
+    /// An opaque node's source content changed.
+    /// The DOM is NOT modified — the WASM applier dispatches a CustomEvent instead.
+    OpaqueChanged { path: NodePath, content: Stem<'a> },
 }
 
 impl<'a> std::fmt::Debug for Patch<'a> {
@@ -364,6 +368,10 @@ impl<'a> std::fmt::Debug for Patch<'a> {
                     path.0.as_slice(),
                     changes.len()
                 )
+            }
+            Patch::OpaqueChanged { path, content } => {
+                let preview: String = content.chars().take(40).collect();
+                write!(f, "OpaqueChanged @{:?} {:?}", path.0.as_slice(), preview)
             }
         }
     }
@@ -707,6 +715,17 @@ impl<'b, 'a> DiffTree for DiffableDocument<'b, 'a> {
     fn descendants(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
         id.descendants(&self.doc.arena)
     }
+
+    fn is_opaque(&self, id: NodeId) -> bool {
+        if let Some(data) = self.nodes.get(&id) {
+            data.props
+                .attrs
+                .iter()
+                .any(|(k, _)| k.local.as_ref() == "data-hotmeal-opaque")
+        } else {
+            false
+        }
+    }
 }
 
 /// Post-order iterator over tree nodes.
@@ -739,6 +758,66 @@ impl Iterator for PostOrderIterator<'_, '_> {
             }
         }
         None
+    }
+}
+
+/// Wrapper around `Tree<HtmlTreeTypes>` that adds `is_opaque` support.
+///
+/// `Tree<T>` is generic and can't check HTML attributes for opaqueness.
+/// This wrapper delegates all DiffTree methods and adds the `data-hotmeal-opaque` check.
+struct OpaqueAwareTree<'a>(Tree<HtmlTreeTypes<'a>>);
+
+impl<'a> DiffTree for OpaqueAwareTree<'a> {
+    type Types = HtmlTreeTypes<'a>;
+
+    fn root(&self) -> NodeId {
+        self.0.root()
+    }
+    fn node_count(&self) -> usize {
+        self.0.node_count()
+    }
+    fn hash(&self, id: NodeId) -> NodeHash {
+        self.0.hash(id)
+    }
+    fn kind(&self, id: NodeId) -> &HtmlNodeKind {
+        self.0.kind(id)
+    }
+    fn properties(&self, id: NodeId) -> &HtmlProps<'a> {
+        self.0.properties(id)
+    }
+    fn text(&self, id: NodeId) -> Option<&Stem<'a>> {
+        self.0.text(id)
+    }
+    fn parent(&self, id: NodeId) -> Option<NodeId> {
+        self.0.parent(id)
+    }
+    fn children(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        self.0.children(id)
+    }
+    fn child_count(&self, id: NodeId) -> usize {
+        self.0.child_count(id)
+    }
+    fn position(&self, id: NodeId) -> usize {
+        self.0.position(id)
+    }
+    fn height(&self, id: NodeId) -> usize {
+        self.0.height(id)
+    }
+    fn iter(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.0.iter()
+    }
+    fn post_order(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.0.post_order()
+    }
+    fn descendants(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        self.0.descendants(id)
+    }
+    fn is_opaque(&self, id: NodeId) -> bool {
+        self.0
+            .properties(id)
+            .attrs
+            .iter()
+            .any(|(k, _)| k.local.as_ref() == "data-hotmeal-opaque")
     }
 }
 
@@ -1005,7 +1084,8 @@ pub fn diff<'a>(old: &Document<'a>, new: &Document<'a>) -> Result<Vec<Patch<'a>>
     }
 
     // Build cinereus Tree for old (needed for shadow tree mutation)
-    let tree_a = build_tree_from_arena(old);
+    let raw_tree_a = build_tree_from_arena(old);
+    let tree_a = OpaqueAwareTree(raw_tree_a);
     // Use DiffableDocument for new (avoids second tree allocation)
     let diff_b = DiffableDocument::new(new)?;
 
@@ -1013,8 +1093,8 @@ pub fn diff<'a>(old: &Document<'a>, new: &Document<'a>) -> Result<Vec<Patch<'a>>
     {
         trace!(
             "tree_a: root hash={:?}, kind={:?}",
-            tree_a.get(tree_a.root).hash,
-            tree_a.get(tree_a.root).kind
+            tree_a.0.get(tree_a.0.root).hash,
+            tree_a.0.get(tree_a.0.root).kind
         );
         trace!(
             "diff_b: root hash={:?}, kind={:?}",
@@ -1031,10 +1111,10 @@ pub fn diff<'a>(old: &Document<'a>, new: &Document<'a>) -> Result<Vec<Patch<'a>>
     let mut matching = cinereus::compute_matching(&tree_a, &diff_b, &config);
 
     // Force root match if same tag
-    let root_a_kind = tree_a.get(tree_a.root).kind.clone();
+    let root_a_kind = tree_a.0.get(tree_a.0.root).kind.clone();
     let root_b_kind = diff_b.kind(diff_b.root()).clone();
-    if root_a_kind == root_b_kind && !matching.contains_a(tree_a.root) {
-        matching.add(tree_a.root, diff_b.root());
+    if root_a_kind == root_b_kind && !matching.contains_a(tree_a.0.root) {
+        matching.add(tree_a.0.root, diff_b.root());
     }
 
     let edit_ops = cinereus::generate_edit_script(&tree_a, &diff_b, &matching);
@@ -1054,7 +1134,50 @@ pub fn diff<'a>(old: &Document<'a>, new: &Document<'a>) -> Result<Vec<Patch<'a>>
         "arena_dom cinereus diff complete"
     );
 
-    convert_ops_with_shadow(edit_ops, &tree_a, &diff_b, &matching)
+    // After edit script, emit OpaqueChanged for matched opaque pairs with different inner HTML
+    let mut opaque_patches = Vec::new();
+    for (a_id, b_id) in matching.pairs() {
+        // Check if the node in the new tree is opaque
+        if !diff_b.is_opaque(b_id) {
+            continue;
+        }
+        // Compare hashes — if identical, no change
+        if tree_a.hash(a_id) == diff_b.hash(b_id) {
+            continue;
+        }
+        // Get the original DOM node IDs for serialization
+        // For tree_a (old), the NodeId corresponds to the cinereus tree, not the Document arena.
+        // We need to serialize from the original documents instead.
+        // tree_b's b_id maps directly to the new Document's arena (DiffableDocument wraps it).
+        // tree_a's a_id maps to the cinereus Tree arena, not the old Document arena.
+        // So we serialize from the new document (which is what we want — the new content).
+        let new_inner = new.serialize_inner_html(b_id);
+        opaque_patches.push((
+            a_id,
+            Stem::Owned(compact_str::CompactString::from(new_inner)),
+        ));
+    }
+
+    let mut patches = convert_ops_with_shadow(edit_ops, &tree_a.0, &diff_b, &matching)?;
+
+    // Now emit OpaqueChanged patches with correct paths from the shadow tree
+    // We need to compute paths for the opaque nodes. Since convert_ops_with_shadow
+    // already consumed the shadow tree, we build a simpler path computation.
+    // Actually, let's integrate opaque patches into convert_ops_with_shadow instead.
+    // For now, compute paths using the same approach as the shadow tree.
+    if !opaque_patches.is_empty() {
+        // Build a fresh shadow just for path computation
+        let shadow = ShadowTree::new(tree_a.0.arena.clone(), tree_a.0.root);
+        for (a_id, content) in opaque_patches {
+            let path = shadow.compute_path(a_id);
+            patches.push(Patch::OpaqueChanged {
+                path: NodePath(path),
+                content,
+            });
+        }
+    }
+
+    Ok(patches)
 }
 
 /// Encapsulates the shadow tree with slot-based path computation.
@@ -1886,6 +2009,10 @@ impl<'a> Patch<'a> {
             Patch::UpdateProps { path, changes } => Patch::UpdateProps {
                 path,
                 changes: changes.into_iter().map(|c| c.into_owned()).collect(),
+            },
+            Patch::OpaqueChanged { path, content } => Patch::OpaqueChanged {
+                path,
+                content: content.into_owned(),
             },
         }
     }
@@ -2785,6 +2912,137 @@ mod tests {
         assert!(
             div_b.children(&shadow.arena).any(|c| c == div_a),
             "div_a should be a child of div_b after move"
+        );
+    }
+
+    #[test]
+    fn test_opaque_unchanged_no_patches() {
+        // When an opaque node's content is identical, no patches should be emitted
+        let old_html =
+            t(r#"<html><body><div data-hotmeal-opaque><p>hello</p></div></body></html>"#);
+        let new_html =
+            t(r#"<html><body><div data-hotmeal-opaque><p>hello</p></div></body></html>"#);
+
+        let old = dom::parse(&old_html);
+        let new = dom::parse(&new_html);
+        let patches = diff(&old, &new).unwrap();
+
+        assert!(
+            patches.is_empty(),
+            "Identical opaque nodes should produce no patches, got: {:?}",
+            patches
+        );
+    }
+
+    #[test]
+    fn test_opaque_changed_emits_opaque_changed() {
+        // When an opaque node's content changes, we should get an OpaqueChanged patch
+        let old_html = t(r#"<html><body><div data-hotmeal-opaque><p>old</p></div></body></html>"#);
+        let new_html = t(r#"<html><body><div data-hotmeal-opaque><p>new</p></div></body></html>"#);
+
+        let old = dom::parse(&old_html);
+        let new = dom::parse(&new_html);
+        let patches = diff(&old, &new).unwrap();
+
+        let opaque_patches: Vec<_> = patches
+            .iter()
+            .filter(|p| matches!(p, Patch::OpaqueChanged { .. }))
+            .collect();
+
+        assert_eq!(
+            opaque_patches.len(),
+            1,
+            "Should have exactly one OpaqueChanged patch, got: {:?}",
+            patches
+        );
+
+        // Should NOT have any Insert/Delete/Move/SetText patches for the opaque children
+        let structural_patches: Vec<_> = patches
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p,
+                    Patch::InsertElement { .. }
+                        | Patch::InsertText { .. }
+                        | Patch::Remove { .. }
+                        | Patch::Move { .. }
+                        | Patch::SetText { .. }
+                )
+            })
+            .collect();
+
+        assert!(
+            structural_patches.is_empty(),
+            "Should not have structural patches for opaque children, got: {:?}",
+            structural_patches
+        );
+
+        // Verify the content contains the new inner HTML
+        if let Patch::OpaqueChanged { content, .. } = &opaque_patches[0] {
+            assert!(
+                content.as_ref().contains("<p>new</p>"),
+                "OpaqueChanged content should contain new inner HTML, got: {:?}",
+                content.as_ref()
+            );
+        }
+    }
+
+    #[test]
+    fn test_opaque_with_normal_siblings() {
+        // Normal siblings should still diff normally alongside opaque nodes
+        let old_html = t(
+            r#"<html><body><div data-hotmeal-opaque><p>old</p></div><span>before</span></body></html>"#,
+        );
+        let new_html = t(
+            r#"<html><body><div data-hotmeal-opaque><p>new</p></div><span>after</span></body></html>"#,
+        );
+
+        let old = dom::parse(&old_html);
+        let new = dom::parse(&new_html);
+        let patches = diff(&old, &new).unwrap();
+
+        // Should have an OpaqueChanged for the div
+        let opaque_count = patches
+            .iter()
+            .filter(|p| matches!(p, Patch::OpaqueChanged { .. }))
+            .count();
+        assert_eq!(
+            opaque_count, 1,
+            "Should have OpaqueChanged for opaque div, got: {:?}",
+            patches
+        );
+
+        // Should have a SetText for the span's text change
+        let text_count = patches
+            .iter()
+            .filter(|p| matches!(p, Patch::SetText { .. }))
+            .count();
+        assert_eq!(
+            text_count, 1,
+            "Should have SetText for sibling span text change, got: {:?}",
+            patches
+        );
+    }
+
+    #[test]
+    fn test_opaque_roundtrip_rust_applier() {
+        // Verify that OpaqueChanged can be applied via the Rust applier
+        let old_html = t(r#"<html><body><div data-hotmeal-opaque><p>old</p></div></body></html>"#);
+        let new_html = t(r#"<html><body><div data-hotmeal-opaque><p>new</p></div></body></html>"#);
+
+        let old = dom::parse(&old_html);
+        let new = dom::parse(&new_html);
+        let patches = diff(&old, &new).unwrap();
+
+        let mut doc = dom::parse(&old_html);
+        doc.apply_patches(patches).expect("apply should succeed");
+
+        // After applying, the opaque div should have new content
+        let result = doc.to_html();
+        let expected = dom::parse(&new_html).to_html();
+        assert_eq!(
+            result, expected,
+            "HTML output should match after OpaqueChanged"
         );
     }
 }

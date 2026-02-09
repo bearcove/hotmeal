@@ -191,8 +191,37 @@ where
     trace!(matched_pairs = matching.len(), "generate_edit_script start");
     let mut ops = Ops::new();
 
+    // Pre-compute descendants of opaque nodes (excluding the opaque nodes themselves).
+    // These nodes are part of atomic subtrees and should not participate in edit generation.
+    let mut opaque_descendants_a: std::collections::HashSet<indextree::NodeId> =
+        std::collections::HashSet::new();
+    for a_id in tree_a.iter() {
+        if tree_a.is_opaque(a_id) {
+            for desc in tree_a.descendants(a_id) {
+                if desc != a_id {
+                    opaque_descendants_a.insert(desc);
+                }
+            }
+        }
+    }
+    let mut opaque_descendants_b: std::collections::HashSet<indextree::NodeId> =
+        std::collections::HashSet::new();
+    for b_id in tree_b.iter() {
+        if tree_b.is_opaque(b_id) {
+            for desc in tree_b.descendants(b_id) {
+                if desc != b_id {
+                    opaque_descendants_b.insert(desc);
+                }
+            }
+        }
+    }
+
     // Phase 1: Text and property changes for matched nodes
     for (a_id, b_id) in matching.pairs() {
+        // Skip descendants of opaque nodes — their content is handled separately
+        if opaque_descendants_a.contains(&a_id) || opaque_descendants_b.contains(&b_id) {
+            continue;
+        }
         // Handle text changes (for text/comment nodes)
         let a_text = tree_a.text(a_id);
         let b_text = tree_b.text(b_id);
@@ -244,6 +273,10 @@ where
             let parent_b = tree_b.parent(b_id);
 
             if let Some(parent_b) = parent_b {
+                // Skip descendants of opaque nodes — opaque subtrees are atomic
+                if opaque_descendants_b.contains(&b_id) {
+                    continue;
+                }
                 let pos = tree_b.position(b_id);
                 ops.push(EditOp::Insert {
                     node_b: b_id,
@@ -264,6 +297,10 @@ where
             b = usize::from(b_id),
             "checking matched pair for move"
         );
+        // Skip descendants of opaque nodes — opaque subtrees are atomic
+        if opaque_descendants_a.contains(&a_id) || opaque_descendants_b.contains(&b_id) {
+            continue;
+        }
         // Skip root
         let Some(parent_a) = tree_a.parent(a_id) else {
             debug!(
@@ -337,6 +374,10 @@ where
     // Process in post-order so children are deleted before parents
     for a_id in tree_a.post_order() {
         if !matching.contains_a(a_id) {
+            // Skip descendants of opaque nodes — opaque subtrees are atomic
+            if opaque_descendants_a.contains(&a_id) {
+                continue;
+            }
             ops.push(EditOp::Delete { node_a: a_id });
         }
     }

@@ -233,6 +233,15 @@ fn top_down_phase<TA, TB>(
             match_subtrees(tree_a, tree_b, a_id, b_id, matching);
         } else {
             trace!(a = usize::from(a_id), a_kind = %a_kind, b = usize::from(b_id), b_kind = %b_kind, "top_down: no hash match");
+
+            // If either node is opaque, match the pair but don't recurse into children
+            if tree_a.is_opaque(a_id) || tree_b.is_opaque(b_id) {
+                if a_kind == b_kind && !matching.contains_a(a_id) && !matching.contains_b(b_id) {
+                    matching.add(a_id, b_id);
+                }
+                continue;
+            }
+
             // Hashes differ - try to match children
             // IMPORTANT: Only consider children of b_id, NOT arbitrary nodes from tree B
             // This prevents cross-level matching that causes spurious operations
@@ -273,6 +282,11 @@ fn match_subtrees<TA, TB>(
     }
 
     matching.add(a_id, b_id);
+
+    // If either node is opaque, match the pair but don't recurse into children
+    if tree_a.is_opaque(a_id) || tree_b.is_opaque(b_id) {
+        return;
+    }
 
     // Match children in order (they should be identical if hashes match)
     let a_children: Vec<_> = tree_a.children(a_id).collect();
@@ -388,10 +402,38 @@ fn bottom_up_phase<TA, TB>(
     TA: DiffTree,
     TB: DiffTree<Types = TA::Types>,
 {
-    // Build index for tree B by kind
+    // Lazy descendant maps - only compute descendants for nodes we actually compare
+    let desc_a = LazyDescendantMap::new(tree_a);
+    let desc_b = LazyDescendantMap::new(tree_b);
+
+    // Build a set of nodes that are descendants of opaque nodes (excluding the opaque
+    // nodes themselves). These should be skipped entirely in bottom-up matching.
+    let mut opaque_descendants_a: HashSet<NodeId> = HashSet::default();
+    for a_id in tree_a.iter() {
+        if tree_a.is_opaque(a_id) {
+            // Skip the opaque node itself, but mark all its descendants
+            for desc in tree_a.descendants(a_id) {
+                if desc != a_id {
+                    opaque_descendants_a.insert(desc);
+                }
+            }
+        }
+    }
+    let mut opaque_descendants_b: HashSet<NodeId> = HashSet::default();
+    for b_id in tree_b.iter() {
+        if tree_b.is_opaque(b_id) {
+            for desc in tree_b.descendants(b_id) {
+                if desc != b_id {
+                    opaque_descendants_b.insert(desc);
+                }
+            }
+        }
+    }
+
+    // Build index for tree B by kind (excluding opaque descendants)
     let mut b_by_kind: HashMap<<TA::Types as TreeTypes>::Kind, Vec<NodeId>> = HashMap::default();
     for b_id in tree_b.iter() {
-        if !matching.contains_b(b_id) {
+        if !matching.contains_b(b_id) && !opaque_descendants_b.contains(&b_id) {
             b_by_kind
                 .entry(tree_b.kind(b_id).clone())
                 .or_default()
@@ -399,14 +441,10 @@ fn bottom_up_phase<TA, TB>(
         }
     }
 
-    // Lazy descendant maps - only compute descendants for nodes we actually compare
-    let desc_a = LazyDescendantMap::new(tree_a);
-    let desc_b = LazyDescendantMap::new(tree_b);
-
     // PASS 1: Match internal nodes (non-leaves)
     // Use BFS order so parents are matched before children, enabling position-based matching
     for a_id in tree_a.iter() {
-        if matching.contains_a(a_id) {
+        if matching.contains_a(a_id) || opaque_descendants_a.contains(&a_id) {
             continue;
         }
 
@@ -532,7 +570,7 @@ fn bottom_up_phase<TA, TB>(
     // PASS 2: Match leaf nodes
     // Now that internal nodes are matched, ancestry constraints are established
     for a_id in tree_a.iter() {
-        if matching.contains_a(a_id) {
+        if matching.contains_a(a_id) || opaque_descendants_a.contains(&a_id) {
             continue;
         }
 
