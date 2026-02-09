@@ -25,6 +25,11 @@ hotmeal-server = { path = "hotmeal-server", version = "0.1.0" }
 # Serialization
 facet-postcard = { git = "https://github.com/facet-rs/facet", branch = "main" }
 
+# RPC
+roam = { git = "https://github.com/bearcove/roam", branch = "main" }
+roam-session = { git = "https://github.com/bearcove/roam", branch = "main" }
+roam-websocket = { git = "https://github.com/bearcove/roam", branch = "main" }
+
 # Data structures
 indextree = "4.7"
 smallvec = "1"

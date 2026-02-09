@@ -21,6 +21,36 @@ macro_rules! debug {
     ($($tt:tt)*) => {};
 }
 
+// ============================================================================
+// RPC Service Definitions (requires "roam" feature)
+// ============================================================================
+
+/// Service implemented by the browser, called by the server to push events.
+///
+/// The server calls `on_event()` on connected browsers whenever content changes
+/// for a route they've subscribed to.
+#[cfg(feature = "roam")]
+#[roam::service]
+pub trait LiveReloadBrowser {
+    /// Called by the server when a live-reload event occurs.
+    async fn on_event(&self, event: LiveReloadEvent);
+}
+
+/// Service implemented by the server, called by the browser to subscribe.
+///
+/// After the browser calls `subscribe(route)`, the server will push
+/// `LiveReloadEvent`s via `LiveReloadBrowser::on_event()` on that connection.
+#[cfg(feature = "roam")]
+#[roam::service]
+pub trait LiveReloadService {
+    /// Subscribe to live-reload events for a route.
+    async fn subscribe(&self, route: String);
+}
+
+// ============================================================================
+// Event types
+// ============================================================================
+
 /// Events produced by the live-reload server.
 ///
 /// These are serialized with postcard and sent to the browser client,
@@ -46,9 +76,7 @@ impl LiveReloadEvent {
     }
 
     /// Deserialize a `LiveReloadEvent` from postcard bytes.
-    pub fn from_postcard(
-        bytes: &[u8],
-    ) -> Result<Self, facet_postcard::DeserializeError<facet_postcard::PostcardError>> {
+    pub fn from_postcard(bytes: &[u8]) -> Result<Self, facet_postcard::DeserializeError> {
         facet_postcard::from_slice(bytes)
     }
 }

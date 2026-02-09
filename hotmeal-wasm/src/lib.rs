@@ -22,6 +22,7 @@
 //! of the document.
 
 use hotmeal::{InsertContent, NodeId, StrTendril, parse};
+#[cfg(target_arch = "wasm32")]
 use hotmeal_server::LiveReloadEvent;
 use smallvec::SmallVec;
 use tracing::{debug, trace};
@@ -180,127 +181,140 @@ pub fn apply_patches_postcard_on(
 }
 
 // ============================================================================
-// Live-reload WebSocket client
+// Live-reload roam RPC client (wasm32 only)
 // ============================================================================
 
-/// Start a live-reload WebSocket client.
-///
-/// Opens a binary WebSocket connection to `ws_url`, receives postcard-encoded
-/// `LiveReloadEvent` messages, and applies patches to the element matched by
-/// `mount_selector`. Handles reconnection with exponential backoff.
-#[wasm_bindgen]
-pub fn start_live_reload(ws_url: &str, mount_selector: &str) -> Result<(), JsValue> {
-    let ws_url = ws_url.to_owned();
-    let mount_selector = mount_selector.to_owned();
+#[cfg(target_arch = "wasm32")]
+mod live_reload {
+    use super::*;
+    use hotmeal_server::{LiveReloadBrowser, LiveReloadBrowserDispatcher, LiveReloadServiceClient};
+    use roam_session::HandshakeConfig;
+    use roam_websocket::WsTransport;
 
-    wasm_bindgen_futures::spawn_local(async move {
-        live_reload_loop(&ws_url, &mount_selector).await;
-    });
+    /// Browser-side implementation of the `LiveReloadBrowser` service.
+    ///
+    /// The server calls `on_event()` on this whenever content changes for
+    /// the subscribed route.
+    #[derive(Clone)]
+    struct LiveReloadBrowserImpl {
+        mount_selector: String,
+    }
 
-    Ok(())
-}
-
-async fn live_reload_loop(ws_url: &str, mount_selector: &str) {
-    use wasm_bindgen::JsCast;
-    use web_sys::{MessageEvent, WebSocket};
-
-    let mut backoff_ms: u32 = 100;
-    let max_backoff_ms: u32 = 5000;
-
-    loop {
-        log(&format!("[hotmeal-wasm] connecting to {ws_url}"));
-
-        let ws = match WebSocket::new(ws_url) {
-            Ok(ws) => ws,
-            Err(e) => {
-                log(&format!("[hotmeal-wasm] WebSocket creation failed: {e:?}"));
-                sleep_ms(backoff_ms).await;
-                backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
-                continue;
+    impl LiveReloadBrowser for LiveReloadBrowserImpl {
+        async fn on_event(&self, _cx: &roam::Context, event: LiveReloadEvent) {
+            if let Err(e) = handle_live_reload_event(&event, &self.mount_selector) {
+                log(&format!("[hotmeal-wasm] error handling event: {e:?}"));
             }
-        };
+        }
+    }
 
-        ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
+    fn handle_live_reload_event(
+        event: &LiveReloadEvent,
+        mount_selector: &str,
+    ) -> Result<(), JsValue> {
+        match event {
+            LiveReloadEvent::Reload => {
+                log("[hotmeal-wasm] full reload requested");
+                let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+                window.location().reload()?;
+            }
+            LiveReloadEvent::Patches {
+                route: _,
+                patches_blob,
+            } => {
+                let count = apply_patches_postcard_on(patches_blob, mount_selector)?;
+                log(&format!("[hotmeal-wasm] applied {count} patches"));
+            }
+            LiveReloadEvent::HeadChanged { route: _ } => {
+                log("[hotmeal-wasm] head changed, reloading");
+                let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+                window.location().reload()?;
+            }
+        }
+        Ok(())
+    }
 
-        // Wait for open
-        let open_promise = js_sys::Promise::new(&mut |resolve, _reject| {
-            let onopen = Closure::once_into_js(move || {
-                resolve.call0(&JsValue::NULL).unwrap();
-            });
-            ws.set_onopen(Some(onopen.unchecked_ref()));
+    /// Start a live-reload connection via roam RPC over WebSocket.
+    ///
+    /// Connects to the server at `ws_url`, subscribes to events for the current
+    /// browser route, and applies patches to the element matched by `mount_selector`.
+    /// Handles reconnection with exponential backoff.
+    #[wasm_bindgen]
+    pub fn start_live_reload(ws_url: &str, mount_selector: &str) -> Result<(), JsValue> {
+        let ws_url = ws_url.to_owned();
+        let mount_selector = mount_selector.to_owned();
+
+        wasm_bindgen_futures::spawn_local(async move {
+            live_reload_loop(&ws_url, &mount_selector).await;
         });
-        let _ = wasm_bindgen_futures::JsFuture::from(open_promise).await;
 
-        log("[hotmeal-wasm] WebSocket connected");
-        backoff_ms = 100;
+        Ok(())
+    }
 
-        // Set up message handler
-        let mount = mount_selector.to_owned();
-        let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
-            let data = event.data();
-            if let Ok(buffer) = data.dyn_into::<js_sys::ArrayBuffer>() {
-                let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
-                if let Err(e) = handle_live_reload_message(&bytes, &mount) {
-                    log(&format!("[hotmeal-wasm] error handling message: {e:?}"));
+    async fn live_reload_loop(ws_url: &str, mount_selector: &str) {
+        let mut backoff_ms: u32 = 100;
+        let max_backoff_ms: u32 = 5000;
+
+        loop {
+            log(&format!("[hotmeal-wasm] connecting to {ws_url}"));
+
+            match live_reload_session(ws_url, mount_selector).await {
+                Ok(()) => {
+                    log("[hotmeal-wasm] session ended");
+                    backoff_ms = 100;
+                }
+                Err(e) => {
+                    log(&format!("[hotmeal-wasm] session error: {e:?}"));
                 }
             }
-        });
-        ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
 
-        // Wait for close
-        let close_promise = js_sys::Promise::new(&mut |resolve, _reject| {
-            let onclose = Closure::once_into_js(move || {
-                resolve.call0(&JsValue::NULL).unwrap();
-            });
-            ws.set_onclose(Some(onclose.unchecked_ref()));
-        });
-        let _ = wasm_bindgen_futures::JsFuture::from(close_promise).await;
-
-        // Clean up
-        ws.set_onmessage(None);
-        drop(onmessage);
-
-        log("[hotmeal-wasm] WebSocket closed, reconnecting...");
-        sleep_ms(backoff_ms).await;
-        backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
-    }
-}
-
-fn handle_live_reload_message(bytes: &[u8], mount_selector: &str) -> Result<(), JsValue> {
-    let event = LiveReloadEvent::from_postcard(bytes)
-        .map_err(|e| JsValue::from_str(&format!("failed to deserialize event: {e}")))?;
-
-    match event {
-        LiveReloadEvent::Reload => {
-            log("[hotmeal-wasm] full reload requested");
-            let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
-            window.location().reload()?;
-        }
-        LiveReloadEvent::Patches {
-            route: _,
-            patches_blob,
-        } => {
-            let count = apply_patches_postcard_on(&patches_blob, mount_selector)?;
-            log(&format!("[hotmeal-wasm] applied {count} patches"));
-        }
-        LiveReloadEvent::HeadChanged { route: _ } => {
-            log("[hotmeal-wasm] head changed, reloading");
-            let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
-            window.location().reload()?;
+            log("[hotmeal-wasm] reconnecting...");
+            roam_session::runtime::sleep(std::time::Duration::from_millis(backoff_ms as u64)).await;
+            backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
         }
     }
 
-    Ok(())
-}
+    async fn live_reload_session(
+        ws_url: &str,
+        mount_selector: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let transport = WsTransport::connect(ws_url).await?;
 
-async fn sleep_ms(ms: u32) {
-    let promise = js_sys::Promise::new(&mut |resolve, _| {
-        let window = web_sys::window().unwrap();
-        window
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32)
-            .unwrap();
-    });
-    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        let dispatcher = LiveReloadBrowserDispatcher::new(LiveReloadBrowserImpl {
+            mount_selector: mount_selector.to_owned(),
+        });
+        let config = HandshakeConfig::default();
+        let (handle, _incoming, driver) =
+            roam_session::accept_framed(transport, config, dispatcher).await?;
+
+        let client = LiveReloadServiceClient::new(handle);
+
+        // Spawn the driver — it processes incoming/outgoing RPC messages.
+        // When the connection closes, driver.run() returns and signals via the oneshot.
+        let (done_tx, done_rx) = futures_channel::oneshot::channel::<()>();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(e) = driver.run().await {
+                log(&format!("[hotmeal-wasm] driver error: {e}"));
+            }
+            let _ = done_tx.send(());
+        });
+
+        log("[hotmeal-wasm] roam session established");
+
+        // Subscribe for the current browser route
+        let route = web_sys::window()
+            .and_then(|w| w.location().pathname().ok())
+            .unwrap_or_else(|| "/".to_owned());
+
+        log(&format!("[hotmeal-wasm] subscribing to route: {route}"));
+        client.subscribe(route).await?;
+        log("[hotmeal-wasm] subscribed, waiting for events");
+
+        // Wait for the driver to finish (connection closed by server or network)
+        let _ = done_rx.await;
+
+        Ok(())
+    }
 }
 
 // ============================================================================
