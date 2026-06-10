@@ -9,7 +9,7 @@ on:
 
 jobs:
   test-x86_64-unknown-linux-gnu:
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: bearcove-ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v6
@@ -29,12 +29,14 @@ jobs:
           cargo nextest run
 
   clippy:
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: bearcove-ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
 
@@ -43,7 +45,7 @@ jobs:
           cargo clippy --workspace --all-features --all-targets --keep-going -- -D warnings --allow deprecated
 
   lockfile:
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: bearcove-ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v6
@@ -57,7 +59,7 @@ jobs:
           cargo update --workspace --locked
 
   docs:
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: bearcove-ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v6
@@ -73,7 +75,7 @@ jobs:
           cargo doc --workspace --no-deps
 
   test-wasm-browser:
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: bearcove-ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v6
@@ -87,13 +89,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
-          version: 9
+          version: 10.28.1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
+          package-manager-cache: false
 
       - name: Install wasm-pack
         run: cargo install wasm-pack
@@ -104,14 +107,14 @@ jobs:
 
       - name: Install Playwright browsers
         working-directory: hotmeal-wasm
-        run: pnpm exec playwright install chromium
+        run: pnpm exec playwright install --with-deps chromium
 
       - name: Run browser tests
         working-directory: hotmeal-wasm
         run: pnpm test
 
   test-browser-fuzz:
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: bearcove-ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v6
@@ -120,14 +123,22 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install Chromium runtime dependencies
+        run: npx --yes playwright@1.57.0 install-deps chromium
 
       - name: Install wasm-pack
         run: cargo install wasm-pack
 
       - name: Build browser-wasm bundle
         working-directory: hotmeal/fuzz/browser-wasm
-        run: wasm-pack build --target web --out-dir ../browser-bundle/dist
+        run: wasm-pack build --target web --dev --out-dir ../browser-bundle/dist
 
       - name: Copy browser-bundle index.html into dist
         run: cp hotmeal/fuzz/browser-bundle/index.html hotmeal/fuzz/browser-bundle/dist/index.html
