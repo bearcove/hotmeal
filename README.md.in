@@ -1,3 +1,9 @@
+## Moved to Dodeca
+
+This project has been absorbed into [Dodeca](https://github.com/bearcove/dodeca).
+Future development happens in Dodeca's `libs/hotmeal` tree; this repository is
+kept for history and crate metadata.
+
 hotmeal is an HTML toolkit based on facet, html5ever, and cinereus (for diff-patching).
 
 It allows patching HTML documents into a DOM the way browsers would do, manipulating the DOM,
