@@ -1,5 +1,11 @@
 # cinereus
 
+## Moved to Dodeca
+
+This project has been absorbed into [Dodeca](https://github.com/bearcove/dodeca).
+Future development happens in Dodeca's `libs/hotmeal` tree; this repository is
+kept for history and crate metadata.
+
 [![crates.io](https://img.shields.io/crates/v/cinereus.svg)](https://crates.io/crates/cinereus)
 [![documentation](https://docs.rs/cinereus/badge.svg)](https://docs.rs/cinereus)
 [![MIT licensed](https://img.shields.io/crates/l/cinereus.svg)](./LICENSE)
