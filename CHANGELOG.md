@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0-rc.1](https://github.com/bearcove/hotmeal/compare/hotmeal-v2.0.3...hotmeal-v3.0.0-rc.1) - 2026-06-10
+
+### Other
+
+- Prepare Hotmeal 3.0.0-rc.0 ([#38](https://github.com/bearcove/hotmeal/pull/38))
+
+## [3.0.0-rc.0](https://github.com/bearcove/hotmeal/compare/cinereus-v2.0.3...cinereus-v3.0.0-rc.0) - 2026-06-10
+
+### Other
+
+- Prepare Hotmeal 3.0.0-rc.0 ([#38](https://github.com/bearcove/hotmeal/pull/38))
+
 ## [2.0.3](https://github.com/bearcove/hotmeal/compare/cinereus-v2.0.1...cinereus-v2.0.3) - 2026-05-20
 
 ### Other
